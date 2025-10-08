@@ -34,10 +34,10 @@ class UserService:
         
         user = User(id=None, name=name, email=email, password=password)
         
-        access_token = create_access_token(user.id, user.email)
-        refresh_token = create_refresh_token(user.id, user.email)
-        
         saved_user = self.user_repo.save(user)
+        
+        access_token = create_access_token(saved_user.id, user.email)
+        refresh_token = create_refresh_token(saved_user.id, user.email)
         
         expires_at = decode_token(access_token)["exp"]
         

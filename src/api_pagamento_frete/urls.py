@@ -25,4 +25,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path("", home),  # rota inicial
     path('users/', include('modules.usuario.application.web.urls')),
+    path('clients/', include('modules.cliente.application.web.urls')),
 ]

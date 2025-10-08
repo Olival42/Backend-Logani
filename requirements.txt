@@ -19,3 +19,5 @@ gunicorn>=21.2
 ipython>=8.0           # shell interativo opcional
 django-debug-toolbar>=4.0  # depuração no dev
 python-dotenv>=1.0      # ler .env local
+
+requests

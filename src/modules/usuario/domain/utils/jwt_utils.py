@@ -14,30 +14,32 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
 import uuid
 
-def create_access_token(user_id: int, email: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {
-        "user_id": user_id,
-        "email": email,
-        "exp": expire,
-        "jti": str(uuid.uuid4()),
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+class Jwt_Utils:
 
-def create_refresh_token(user_id: int, email: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {
-        "user_id": user_id,
-        "email": email,
-        "exp": expire,
-        "jti": str(uuid.uuid4()),
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    def create_access_token(user_id: int, email: str) -> str:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        payload = {
+            "user_id": user_id,
+            "email": email,
+            "exp": expire,
+            "jti": str(uuid.uuid4()),
+        }
+        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-def decode_token(token: str) -> dict:
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise ValueError("Token expirado")
-    except jwt.InvalidTokenError:
-        raise ValueError("Token inválido")
+    def create_refresh_token(user_id: int, email: str) -> str:
+        expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        payload = {
+            "user_id": user_id,
+            "email": email,
+            "exp": expire,
+            "jti": str(uuid.uuid4()),
+        }
+        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    def decode_token(token: str) -> dict:
+        try:
+            return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        except jwt.ExpiredSignatureError:
+            raise ValueError("Token expirado")
+        except jwt.InvalidTokenError:
+            raise ValueError("Token inválido")

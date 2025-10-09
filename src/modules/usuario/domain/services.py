@@ -1,10 +1,6 @@
 from modules.usuario.domain.entities import User
 from modules.usuario.domain.repositories.user_repository import IUserRepository
-from modules.usuario.domain.utils.jwt_utils import (
-    create_access_token,
-    create_refresh_token,
-    decode_token
-)
+from modules.usuario.domain.utils.jwt_utils import Jwt_Utils
 
 from modules.usuario.domain.repositories.blacklist_repository import IBlacklistRepository
 
@@ -36,10 +32,10 @@ class UserService:
         
         saved_user = self.user_repo.save(user)
         
-        access_token = create_access_token(saved_user.id, user.email)
-        refresh_token = create_refresh_token(saved_user.id, user.email)
+        access_token = Jwt_Utils.create_access_token(saved_user.id, saved_user.email)
+        refresh_token = Jwt_Utils.create_refresh_token(saved_user.id, saved_user.email)
         
-        expires_at = decode_token(access_token)["exp"]
+        expires_at = Jwt_Utils.decode_token(access_token)["exp"]
         
         return {
             "user": {
@@ -69,10 +65,10 @@ class UserService:
         
         r.delete(attempts_key) 
         
-        access_token = create_access_token(user.id, user.email) 
-        refresh_token = create_refresh_token(user.id, user.email) 
+        access_token = Jwt_Utils.create_access_token(user.id, user.email) 
+        refresh_token = Jwt_Utils.create_refresh_token(user.id, user.email) 
         
-        payload = decode_token(access_token)
+        payload = Jwt_Utils.decode_token(access_token)
         expires_at = payload["exp"]
         
         return {
@@ -88,7 +84,7 @@ class UserService:
     
     def logout(self, access_token: str, refresh_token: str = None) -> dict:
         try:
-            payload = decode_token(access_token)
+            payload = Jwt_Utils.decode_token(access_token)
             
             jti = payload["jti"]
             exp = payload["exp"]
@@ -97,7 +93,7 @@ class UserService:
                 self.blacklist_repo.add_token(jti, exp)
             
             if refresh_token:
-                payload_r = decode_token(refresh_token)
+                payload_r = Jwt_Utils.decode_token(refresh_token)
                 
                 jti_r = payload_r["jti"]
                 exp_r = payload_r["exp"]
@@ -112,21 +108,21 @@ class UserService:
         
     def refresh_access_token(self, refresh_token: str) -> dict: 
         try: 
-            payload = decode_token(refresh_token)
+            payload = Jwt_Utils.decode_token(refresh_token)
             
             jti = payload["jti"] 
             
             if self.blacklist_repo.is_blacklisted(jti): 
                 raise ValueError("Refresh token revogado") 
             
-            new_access_token = create_access_token(payload["user_id"], payload["email"]) 
+            new_access_token = Jwt_Utils.create_access_token(payload["user_id"], payload["email"]) 
             
             return {"access": new_access_token} 
         except ValueError as e: 
             raise ValueError(str(e))
         
     def authenticate(self, token: str) -> dict:
-        payload = decode_token(token)
+        payload = Jwt_Utils.decode_token(token)
         
         if self.blacklist_repo.is_blacklisted(payload["jti"]):
             raise ValueError("Token revogado")

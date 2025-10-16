@@ -1,50 +1,162 @@
 from rest_framework import serializers
 from modules.cliente.domain.entities.client_entity import Client as ClientEntity
 from modules.cliente.domain.entities.address_entity import Address as AddressEntity
+from modules.cliente.domain.entities.utils.client_validators import ClientValidators
+import re
 
-class AddressSerializer(serializers.Serializer):
-    postal_code = serializers.CharField(required=False, allow_blank=True)
-    number = serializers.CharField(required=False, allow_blank=True, max_length=10)
-    address = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    city = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    state = serializers.CharField(required=False, allow_blank=True)
-    complement = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    province = serializers.CharField(max_length=255, required=False, allow_blank=True)
+class CreateAddressSerializer(serializers.Serializer):
+    address = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo endereço é obrigatório.",
+            "blank": "O campo endereço é obrigatório."
+        }
+    )
+    number = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo número é obrigatório.",
+            "blank": "O campo número é obrigatório."
+        }
+    )
+    postal_code = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo CEP é obrigatório.",
+            "blank": "O campo CEP é obrigatório."
+        }
+    )
+    city = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo cidade é obrigatório.",
+            "blank": "O campo cidade é obrigatório."
+        }
+    )
+    state = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo estado é obrigatório.",
+            "blank": "O campo estado é obrigatório."
+        }
+    )
+    complement = serializers.CharField(required=False, allow_blank=True)
+    province = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo bairro é obrigatório.",
+            "blank": "O campo bairro é obrigatório."
+        }
+    )
+
+    def validate_postal_code(self, value):
+        digits = re.sub(r'\D', '', value)
+        if len(digits) != 8:
+            raise serializers.ValidationError("CEP inválido, deve conter 8 dígitos.")
+        return digits
+
+    def validate_state(self, value):
+        if len(value.strip()) != 2:
+            raise serializers.ValidationError("Estado inválido, deve conter 2 caracteres.")
+        return value.strip().upper()
+
+    def validate(self, attrs):
+        required_fields = ["address", "number", "postal_code", "city", "state", "province"]
+        missing = [f for f in required_fields if not attrs.get(f)]
+        if missing:
+            raise serializers.ValidationError(
+                f"Preencha todos os campos obrigatórios: {', '.join(missing)}."
+            )
+        return attrs
 
     def create(self, validated_data):
-        return AddressEntity(
-            address=validated_data["address"],
-            number=validated_data["number"],
-            postal_code=validated_data["postal_code"],
-            city=validated_data["city"],
-            state=validated_data["state"],
-            complement=validated_data.get("complement", ""),
-            province=validated_data.get("province", "")
-        )
+        try:
+            return AddressEntity(**validated_data)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
 
-class ClientSerializer(serializers.Serializer):
+
+class CreateClientSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
-    name = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    type_person = serializers.ChoiceField(choices=["PF", "PJ"], required=False, allow_blank=True)
-    cpf_cnpj = serializers.CharField(required=False, allow_blank=True)
+    name = serializers.CharField(required=True, allow_blank=True)
+    cpf = serializers.CharField(required=True, allow_blank=True)
     phone = serializers.CharField(required=False, allow_blank=True)
-    mobile_phone = serializers.CharField(required=False, allow_blank=True)
-    state_register = serializers.CharField(required=False, allow_blank=True)
-    address = AddressSerializer()
-    asaas_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    mobile_phone = serializers.CharField(required=True, allow_blank=False)
+    address = CreateAddressSerializer()
+    asaas_id = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_name(self, value):
+        try:
+            return ClientValidators.validate_name(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_cpf_cnpj(self, value):
+        try:
+            return ClientValidators.validate_cpf(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_phone(self, value):
+        try:
+            return ClientValidators.validate_phone(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_mobile_phone(self, value):
+        try:
+            return ClientValidators.validate_mobile_phone(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
 
     def create(self, validated_data):
-        address_data = validated_data.pop("address")
-        address_entity = AddressSerializer().create(address_data)
+        address_data = validated_data.pop("address", {})
+        address_entity = CreateAddressSerializer().create(address_data)
+        return ClientEntity(address=address_entity, **validated_data, user=self.context["request"].user)
 
-        client_entity = ClientEntity(
-            id=validated_data.get("id"),
-            name=validated_data["name"],
-            cpf_cnpj=validated_data["cpf_cnpj"],
-            phone=validated_data.get("phone"),
-            mobile_phone=validated_data["mobile_phone"],
-            address=address_entity,
-            user=self.context["request"].user,
-            asaas_id=validated_data.get("asaas_id")
-)
-        return client_entity
+class UpdateAddressSerializer(serializers.Serializer):
+    address = serializers.CharField(required=False)
+    number = serializers.CharField(required=False)
+    postal_code = serializers.CharField(required=False)
+    city = serializers.CharField(required=False)
+    state = serializers.CharField(required=False)
+    complement = serializers.CharField(required=False, allow_blank=True)
+    province = serializers.CharField(required=False)
+
+class UpdateClientSerializer(serializers.Serializer):
+    name = serializers.CharField(required=False)
+    cpf = serializers.CharField(required=False)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    mobile_phone = serializers.CharField(required=False)
+    address = UpdateAddressSerializer(required=False)
+    asaas_id = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_name(self, value):
+        try:
+            return ClientValidators.validate_name(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_cpf(self, value):
+        try:
+            return ClientValidators.validate_cpf(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_phone(self, value):
+        try:
+            return ClientValidators.validate_phone(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+    def validate_mobile_phone(self, value):
+        try:
+            return ClientValidators.validate_mobile_phone(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))

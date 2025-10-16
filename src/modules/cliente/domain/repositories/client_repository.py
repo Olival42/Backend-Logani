@@ -10,3 +10,7 @@ class IClientRepository:
     @abstractmethod
     def get_by_id(self, client_id: str) -> ClientEntity | None:
         pass
+    
+    @abstractmethod
+    def update(self, client_entity) -> ClientEntity:
+        pass

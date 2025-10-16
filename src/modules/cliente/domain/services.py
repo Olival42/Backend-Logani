@@ -1,7 +1,6 @@
 from modules.cliente.domain.entities.client_entity import Client as ClientEntity
-from modules.cliente.domain.repositories.client_repository import IClientRepository
 from modules.cliente.domain.entities.address_entity import Address as AddressEntity
-
+from modules.cliente.domain.repositories.client_repository import IClientRepository
 from modules.usuario.adapters.persistence.models import User
 
 class ClientService:
@@ -29,19 +28,15 @@ class ClientService:
         client_entity = ClientEntity(
             id=data.get("id"),
             name=data["name"],
-            cpf_cnpj=data["cpf_cnpj"],
-            type_person=data["type_person"],
+            cpf=data["cpf"],
             phone=data.get("phone"),
             mobile_phone=data["mobile_phone"],
-            state_register=data.get("state_register"),
             address=address_entity,
             user=user,
             asaas_id=data.get("asaas_id")
         )
 
-
         self.client_repository.save(client_entity)
-
         return client_entity
     
     def get_client_by_id(self, client_id: str) -> dict:
@@ -70,9 +65,7 @@ class ClientService:
         return {
             "id": client_obj.id,
             "name": client_obj.name,
-            "type_person": client_obj.type_person,
-            "cpf_cnpj": client_obj.cpf_cnpj,
-            "state_register": client_obj.state_register,
+            "cpf": client_obj.cpf,
             "phone": client_obj.phone,
             "mobile_phone": client_obj.mobile_phone,
             "registration_date": client_obj.registration_date,
@@ -81,3 +74,36 @@ class ClientService:
             "user": user,
             "address": address,
         }
+
+    def update_client(self, client_id: str, data: dict) -> ClientEntity:
+        existing_client = self.client_repository.get_by_id(client_id)
+        if not existing_client:
+            raise ValueError("Cliente não encontrado")
+
+        if "address" in data:
+            address_data = data["address"]
+            updated_address = AddressEntity(
+                address=address_data.get("address", existing_client.address.address),
+                number=address_data.get("number", existing_client.address.number),
+                postal_code=address_data.get("postal_code", existing_client.address.postal_code),
+                city=address_data.get("city", existing_client.address.city),
+                state=address_data.get("state", existing_client.address.state),
+                complement=address_data.get("complement", existing_client.address.complement),
+                province=address_data.get("province", existing_client.address.province),
+            )
+        else:
+            updated_address = existing_client.address
+
+        updated_client = ClientEntity(
+            id=existing_client.id,
+            name=data.get("name", existing_client.name),
+            cpf=data.get("cpf", existing_client.cpf),
+            phone=data.get("phone", existing_client.phone),
+            mobile_phone=data.get("mobile_phone", existing_client.mobile_phone),
+            address=updated_address,
+            user=existing_client.user,
+            asaas_id=data.get("asaas_id", existing_client.asaas_id)
+        )
+
+        updated_client = self.client_repository.update(updated_client)
+        return updated_client

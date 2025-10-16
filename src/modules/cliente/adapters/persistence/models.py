@@ -18,17 +18,6 @@ class Address(models.Model):
 
 
 class Client(models.Model):
-    
-    TYPE_PERSON_CHOICES = [
-        ("PF", "Pessoa Física"),
-        ("PJ", "Pessoa Jurídica"),
-    ]
-    
-    type_person = models.CharField(
-        max_length=2,
-        choices=TYPE_PERSON_CHOICES,
-        verbose_name="Tipo de pessoa"
-    )
 
     id = models.UUIDField(primary_key=True, editable=False)
     name = models.CharField(max_length=255)
@@ -37,7 +26,7 @@ class Client(models.Model):
         on_delete=models.CASCADE,
         related_name="client"
     )
-    cpf_cnpj = models.CharField(max_length=14, unique=True)
+    cpf = models.CharField(max_length=14, unique=True)
     phone = models.CharField(max_length=11, blank=True, null=True)
     mobile_phone = models.CharField(max_length=11, blank=True, null=True)
 
@@ -49,8 +38,6 @@ class Client(models.Model):
         blank=True
     )
     
-    state_register = models.CharField(max_length=255, blank=True, null=True)
-
     registration_date = models.DateTimeField(auto_now_add=True)
     active = models.BooleanField(default=True)
     

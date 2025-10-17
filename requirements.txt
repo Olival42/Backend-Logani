@@ -1,5 +1,10 @@
 # Django
 Django>=4.2,<5.0
+djangorestframework>=3.15,<4.0
+
+# Autenticação
+bcrypt>=4.0
+PyJWT>=2.8.0
 
 # Banco de dados PostgreSQL
 psycopg2-binary>=2.9
@@ -14,3 +19,5 @@ gunicorn>=21.2
 ipython>=8.0           # shell interativo opcional
 django-debug-toolbar>=4.0  # depuração no dev
 python-dotenv>=1.0      # ler .env local
+
+requests

@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
-WORKDIR /code
+WORKDIR /code/src
+ENV PYTHONPATH=/code/src
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -11,6 +12,6 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /code/
+COPY . /code/src/
 
 CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:${PORT}"]

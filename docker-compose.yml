@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.${ENV}
     container_name: api-pagamento-frete
+    working_dir: /code/src
     command: >
       sh -c "python manage.py migrate &&
              python manage.py runserver 0.0.0.0:${PORT}"

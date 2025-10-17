@@ -1,0 +1,1 @@
+from modules.usuario.adapters.persistence.user_repository_django import UserRepository

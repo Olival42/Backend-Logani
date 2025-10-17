@@ -13,6 +13,7 @@ class CreateAddressSerializer(serializers.Serializer):
             "blank": "O campo endereço é obrigatório."
         }
     )
+    
     number = serializers.CharField(
         required=True,
         allow_blank=False,
@@ -21,6 +22,7 @@ class CreateAddressSerializer(serializers.Serializer):
             "blank": "O campo número é obrigatório."
         }
     )
+    
     postal_code = serializers.CharField(
         required=True,
         allow_blank=False,
@@ -29,6 +31,7 @@ class CreateAddressSerializer(serializers.Serializer):
             "blank": "O campo CEP é obrigatório."
         }
     )
+    
     city = serializers.CharField(
         required=True,
         allow_blank=False,
@@ -37,6 +40,7 @@ class CreateAddressSerializer(serializers.Serializer):
             "blank": "O campo cidade é obrigatório."
         }
     )
+    
     state = serializers.CharField(
         required=True,
         allow_blank=False,
@@ -45,7 +49,9 @@ class CreateAddressSerializer(serializers.Serializer):
             "blank": "O campo estado é obrigatório."
         }
     )
+    
     complement = serializers.CharField(required=False, allow_blank=True)
+    
     province = serializers.CharField(
         required=True,
         allow_blank=False,
@@ -84,11 +90,38 @@ class CreateAddressSerializer(serializers.Serializer):
 
 class CreateClientSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
-    name = serializers.CharField(required=True, allow_blank=True)
-    cpf = serializers.CharField(required=True, allow_blank=True)
+    
+    name = serializers.CharField(
+        required=True, 
+        allow_blank=False, 
+        error_messages= {
+            "required": "O campo nome é obrigatório.",
+            "blank": "O campo nome é obrigatório."
+        }
+    )
+    
+    cpf = serializers.CharField(
+        required=True, 
+        allow_blank=False, 
+        error_messages={
+            "required": "O campo CPF é obrigatório.",
+            "blank": "O campo CPF é obrigatório."
+        }
+    )
+    
     phone = serializers.CharField(required=False, allow_blank=True)
-    mobile_phone = serializers.CharField(required=True, allow_blank=False)
+    
+    mobile_phone = serializers.CharField(
+        required=True, 
+        allow_blank=False,
+        error_messages={
+            "required": "O campo celular é obrigatório.",
+            "blank": "O campo celular é obrigatório."
+        }
+    )
+    
     address = CreateAddressSerializer()
+    
     asaas_id = serializers.CharField(required=False, allow_blank=True)
 
     def validate_name(self, value):

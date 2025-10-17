@@ -22,7 +22,7 @@ class ClientService:
             city=address_data.get("city"),
             state=address_data.get("state"),
             complement=address_data.get("complement", ""),
-            province=address_data.get("province", "")
+            province=address_data.get("province")
         )
 
         client_entity = ClientEntity(
@@ -63,16 +63,18 @@ class ClientService:
         }
 
         return {
-            "id": client_obj.id,
-            "name": client_obj.name,
-            "cpf": client_obj.cpf,
-            "phone": client_obj.phone,
-            "mobile_phone": client_obj.mobile_phone,
-            "registration_date": client_obj.registration_date,
-            "active": client_obj.active,
-            "asaas_id": client_obj.asaas_id,
             "user": user,
-            "address": address,
+            "client": {
+                "id": client_obj.id,
+                "name": client_obj.name,
+                "cpf": client_obj.cpf,
+                "phone": client_obj.phone,
+                "mobile_phone": client_obj.mobile_phone,
+                "registration_date": client_obj.registration_date,
+                "active": client_obj.active,
+                "asaas_id": client_obj.asaas_id,
+                "address": address
+            }
         }
 
     def update_client(self, client_id: str, data: dict) -> ClientEntity:

@@ -83,7 +83,12 @@ class ClientUpdateView(APIView):
         try:
             updated_client = service.update_client(client_id, serializer.validated_data)
             return Response(
-                {"id": updated_client.id, "detail": "Cliente atualizado com sucesso"},
+                {
+                    "id": updated_client.id, 
+                    "message": {
+                        "detail": "Cliente atualizado com sucesso"
+                    }
+                },
                 status=status.HTTP_200_OK
             )
         except ValueError as e:

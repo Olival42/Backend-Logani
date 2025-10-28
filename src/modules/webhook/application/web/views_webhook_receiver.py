@@ -37,9 +37,6 @@ class AsaasWebhookReceiverView(APIView):
         }
         """
         try:
-            # Log da notificação recebida (para debug)
-            print(f"Webhook recebido: {json.dumps(request.data, indent=2)}")
-            
             # Inicializa os serviços
             notification_repository = WebhookNotificationRepository()
             payment_repository = PaymentRepository()
@@ -64,10 +61,6 @@ class AsaasWebhookReceiverView(APIView):
             )
             
         except Exception as e:
-            # Em caso de erro, ainda retorna 200 para evitar reenvios
-            # mas loga o erro para análise
-            print(f"Erro ao processar webhook: {str(e)}")
-            
             return Response(
                 {'message': 'Erro ao processar notificação, mas foi registrado para análise'},
                 status=status.HTTP_200_OK

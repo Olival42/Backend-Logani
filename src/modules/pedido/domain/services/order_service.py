@@ -1,7 +1,8 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
+from django.conf import settings
 
 from modules.pedido.domain.entities.order_entity import Order, OrderItem
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
@@ -22,6 +23,10 @@ def _get_payments_for_order(order_id: str) -> List[Dict[str, Any]]:
                 'payment_method': payment.payment_method,
                 'status': payment.status,
                 'installments': payment.installments,
+                'installment_id': payment.installment_id,
+                'installment_number': payment.installment_number,
+                'asaas_id': payment.asaas_id,
+                'asaas_checkout_id': payment.asaas_checkout_id,
                 'checkout_url': payment.checkout_url,
                 'created_at': payment.created_at.isoformat() if payment.created_at else None,
                 'paid_at': payment.paid_at.isoformat() if payment.paid_at else None
@@ -162,12 +167,13 @@ class OrderService:
             'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
         }
     
-    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+    def cancel_order(self, order_id: str, should_refund: bool = True) -> Dict[str, Any]:
         """
-        Cancela um pedido
+        Cancela um pedido e estorna pagamentos quando aplicável
         
         Args:
             order_id: ID do pedido
+            should_refund: Se True, estorna os pagamentos automaticamente
             
         Returns:
             Dict com informações do cancelamento
@@ -176,16 +182,74 @@ class OrderService:
         if not order:
             raise ValueError("Pedido não encontrado")
         
-        if not order.can_be_cancelled():
-            raise ValueError(f"Pedido não pode ser cancelado. Status atual: {order.status}")
+        # Verifica se o pedido pode ser cancelado (incluindo verificação de prazo)
+        days_to_cancel = getattr(settings, 'DAYS_TO_CANCEL', 2)
+        can_cancel, error_message = order.can_be_cancelled_with_time_check(days_to_cancel)
         
+        if not can_cancel:
+            raise ValueError(error_message)
+        
+        # Busca pagamentos do pedido
+        payments = _get_payments_for_order(order_id)
+        refund_results = []
+        
+        # Se deve estornar e existem pagamentos, processa estorno
+        if should_refund and payments:
+            from modules.pagamento.adapters.persistence.payment_repository_django import PaymentRepository
+            from modules.cliente.adapters.external.asaas_client import AsaasClient
+            
+            payment_repository = PaymentRepository()
+            asaas_client = AsaasClient()
+            
+            for payment_data in payments:
+                if payment_data['status'] in ['PAID', 'RECEIVED']:
+                    try:
+                        # Busca o pagamento pelo ID
+                        payment = payment_repository.get_by_id(payment_data['id'])
+                        
+                        if payment and payment.asaas_id:
+                            # Determina se é parcelado
+                            is_installment = payment.installments > 1 and payment.installment_id
+                            
+                            if is_installment:
+                                # Estorna parcelamento completo
+                                installment_id = payment.installment_id
+                                refund_response = asaas_client.refund_installment(
+                                    installment_id=installment_id,
+                                    description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
+                                )
+                                refund_results.append({
+                                    'payment_id': payment_data['id'],
+                                    'type': 'installment',
+                                    'installment_id': installment_id,
+                                    'response': refund_response
+                                })
+                            else:
+                                # Estorna pagamento único (PIX ou cartão 1 parcela)
+                                refund_response = asaas_client.refund_payment(
+                                    payment_id=payment.asaas_id,
+                                    description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
+                                )
+                                refund_results.append({
+                                    'payment_id': payment_data['id'],
+                                    'type': 'single_payment',
+                                    'response': refund_response
+                                })
+                    except Exception as e:
+                        refund_results.append({
+                            'payment_id': payment_data['id'],
+                            'error': str(e)
+                        })
+        
+        # Cancela o pedido
         order.cancel()
         updated_order = self.order_repository.update(order)
         
         return {
             'order_id': str(updated_order.id),
             'external_reference': updated_order.external_reference,
-            'status': updated_order.status
+            'status': updated_order.status,
+            'refunds': refund_results
         }
     
     def mark_order_as_preparing(self, order_id: str) -> Dict[str, Any]:

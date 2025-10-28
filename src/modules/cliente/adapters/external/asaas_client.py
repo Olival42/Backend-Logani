@@ -177,3 +177,65 @@ class AsaasClient:
             return response
         except Exception as e:
             raise ValueError(f"Erro ao consultar cliente no Asaas: {str(e)}")
+    
+    def refund_payment(self, payment_id: str, value: Optional[float] = None, description: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Estorna um pagamento no Asaas
+        Documentação: https://docs.asaas.com/reference/estornar-cobranca
+        
+        Args:
+            payment_id: ID do pagamento no Asaas
+            value: Valor a estornar (opcional, estorna tudo se não informado)
+            description: Descrição do estorno (opcional)
+            
+        Returns:
+            Dict com a resposta da API
+            
+        Raises:
+            ValueError: Em caso de erro no estorno
+        """
+        try:
+            data = {}
+            
+            if value is not None:
+                data['value'] = float(value)
+            
+            if description:
+                data['description'] = description
+            
+            # Endpoint para estornar cobrança
+            response = self._make_request('POST', f'payments/{payment_id}/refund', data if data else None)
+            return response
+        except Exception as e:
+            raise ValueError(f"Erro ao estornar pagamento no Asaas: {str(e)}")
+    
+    def refund_installment(self, installment_id: str, value: Optional[float] = None, description: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Estorna um parcelamento no Asaas
+        Documentação: https://docs.asaas.com/reference/estornar-parcelamento
+        
+        Args:
+            installment_id: ID do parcelamento no Asaas
+            value: Valor a estornar (opcional, estorna tudo se não informado)
+            description: Descrição do estorno (opcional)
+            
+        Returns:
+            Dict com a resposta da API
+            
+        Raises:
+            ValueError: Em caso de erro no estorno
+        """
+        try:
+            data = {}
+            
+            if value is not None:
+                data['value'] = float(value)
+            
+            if description:
+                data['description'] = description
+            
+            # Endpoint para estornar parcelamento
+            response = self._make_request('POST', f'installments/{installment_id}/refund', data if data else None)
+            return response
+        except Exception as e:
+            raise ValueError(f"Erro ao estornar parcelamento no Asaas: {str(e)}")

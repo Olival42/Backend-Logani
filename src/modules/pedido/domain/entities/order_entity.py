@@ -79,7 +79,7 @@ class Order:
     
     def can_be_cancelled(self) -> bool:
         """Verifica se o pedido pode ser cancelado"""
-        return self.status in ['PENDING', 'CONFIRMED']
+        return self.status in ['PENDING', 'CONFIRMED', 'PAID']
     
     def confirm(self):
         """Confirma o pedido"""
@@ -101,6 +101,30 @@ class Order:
         if self.can_be_cancelled():
             self.status = 'CANCELLED'
             self.updated_at = datetime.now(timezone.utc)
+    
+    def can_be_cancelled_with_time_check(self, days_to_cancel: int = 2):
+        """
+        Verifica se o pedido pode ser cancelado considerando o prazo
+        
+        Args:
+            days_to_cancel: Número de dias permitidos para cancelamento
+            
+        Returns:
+            Tuple (pode_cancelar, mensagem_erro)
+        """
+        if not self.can_be_cancelled():
+            return False, f"Pedido não pode ser cancelado. Status atual: {self.status}"
+        
+        # Verifica prazo de cancelamento (apenas para pedidos confirmados ou pagos)
+        if self.status in ['CONFIRMED', 'PAID'] and self.confirmed_at:
+            # Calcula os dias decorridos desde a confirmação usando timezone UTC
+            now = datetime.now(timezone.utc)
+            days_passed = (now - self.confirmed_at).days
+            
+            if days_passed > days_to_cancel:
+                return False, f"Prazo de cancelamento expirado. Pedido confirmado há {days_passed} dias. Prazo máximo: {days_to_cancel} dias"
+        
+        return True, None
     
     def mark_as_preparing(self):
         """Marca o pedido como em preparação"""

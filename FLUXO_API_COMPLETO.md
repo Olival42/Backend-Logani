@@ -51,6 +51,10 @@ A API de Pagamento funciona como uma ponte entre o frontend, o sistema de pagame
 ┌─────────────────┐
 │   PAGAMENTO     │ ← Gestão de pagamentos (futuro)
 └─────────────────┘
+
+┌─────────────────┐
+│   EMAIL         │ ← Envio de emails automáticos
+└─────────────────┘
 ```
 
 ### Fluxo de Dados
@@ -416,6 +420,45 @@ sequenceDiagram
 
 ---
 
+### Fluxo 7: Envio Automático de Emails
+
+```mermaid
+sequenceDiagram
+    Webhook->>API: PAYMENT_CONFIRMED
+    API->>Database: Atualizar pedido (CONFIRMED)
+    API->>EmailService: Enviar email imediatamente
+    EmailService->>SMTP: Enviar email
+    SMTP-->>OWNER: Email de notificação com dados de frete
+```
+
+**Endpoint:** Automático (via webhook)
+
+**O que acontece:**
+1. Quando um pedido é confirmado via webhook, o sistema envia email IMEDIATAMENTE
+2. Email é enviado para o endereço configurado em `OWNER_EMAIL`
+3. Email inclui informações completas para logística/frete:
+   - Informações do pedido (referência, total, itens)
+   - Dados do cliente (nome, CPF, contatos)
+   - Endereço completo para entrega
+   - Lista de produtos para embalagem
+
+**Configuração:**
+
+No arquivo `.env`:
+```bash
+OWNER_EMAIL=seu-email@exemplo.com
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=seu-email@gmail.com
+EMAIL_HOST_PASSWORD=senha-de-app
+```
+
+Para desenvolvimento (console): `EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend`
+
+---
+
 ## 📊 Diagramas de Sequência
 
 ### Fluxo Completo de Compra
@@ -476,6 +519,11 @@ sequenceDiagram
     F->>API: GET /orders/detail/{order_id}/
     API->>DB: Buscar pedido
     API-->>F: {status: PAID}
+    
+    Note over F,A: 10. EMAIL AUTOMÁTICO (imediato)
+    API->>EmailService: Enviar email de notificação
+    EmailService->>SMTP: Email com dados de entrega
+    SMTP-->>OWNER: Email com informações de frete
 ```
 
 ---

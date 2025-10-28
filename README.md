@@ -18,6 +18,7 @@ Construído com Python e Django seguindo princípios de **Domain-Driven Design (
 - 💳 **Checkout Asaas:** Geração automática de links de pagamento
 - 🔔 **Webhooks:** Processamento automático de notificações de pagamento
 - 📊 **Status Tracking:** Acompanhamento de status de pedidos em tempo real
+- 📧 **Notificações por Email:** Emails automáticos para pedidos confirmados
 - 🏗️ **Arquitetura DDD:** Separação clara de responsabilidades por módulos
 
 ## Tecnologias Utilizadas
@@ -95,7 +96,8 @@ src/modules/
 ├── pedido/       # Gestão de pedidos
 ├── checkout/      # Links de pagamento (Asaas)
 ├── pagamento/     # Gestão de pagamentos
-└── webhook/       # Processamento de notificações
+├── webhook/       # Processamento de notificações
+└── email/         # Envio de emails automáticos
 ```
 
 ### Fluxo de Dados
@@ -133,9 +135,25 @@ REDIS_PORT=6379
 # Asaas (obrigatório)
 ASAAS_API_KEY=sua-api-key-asaas
 ASAAS_BASE_URL=https://sandbox.asaas.com/api/v3
+
+# Email (obrigatório para notificações de pedidos)
+OWNER_EMAIL=seu-email@exemplo.com
+DEFAULT_FROM_EMAIL=noreply@api-pagamento.com
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=
+EMAIL_HOST_PASSWORD=
+
+# Ngrok (para desenvolvimento)
+NGROK_AUTHTOKEN=seu-token-ngrok
 ```
 
-**Importante:** Obtenha sua `ASAAS_API_KEY` em [https://www.asaas.com](https://www.asaas.com)
+**Importante:** 
+- Obtenha sua `ASAAS_API_KEY` em [https://www.asaas.com](https://www.asaas.com)
+- O sistema envia emails automáticos para `OWNER_EMAIL` quando pedidos são confirmados
+- Configure suas credenciais de email para receber notificações em produção
 
 ## 📦 Endpoints Principais
 
@@ -186,6 +204,35 @@ Token expira em **1 hora**. Use `/users/refresh-token/` para renovar.
 **Detalhes:**
 - **Pagamento à vista:** `PENDING` → `CONFIRMED` → `PAID`
 - **Pagamento parcelado:** `PENDING` → `CONFIRMED` (após 1ª parcela) → `PAID` (após última parcela)
+
+## 📧 Notificações por Email
+
+O sistema envia emails automáticos quando pedidos são confirmados.
+
+### Como Funciona
+
+1. **Quando um pedido é confirmado** (via webhook), o sistema envia email **IMEDIATAMENTE**
+2. **Email é enviado** automaticamente para o proprietário do e-commerce
+3. **Email inclui:** 
+   - Dados do pedido (referência, total, itens)
+   - Informações do cliente (nome, CPF, contatos)
+   - Endereço completo para entrega
+   - Lista de produtos para embalagem/frete
+
+### Configuração
+
+Configure as variáveis no `.env`:
+```bash
+OWNER_EMAIL=seu-email@exemplo.com
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=seu-email@gmail.com
+EMAIL_HOST_PASSWORD=senha-de-app
+```
+
+**Nota:** Para desenvolvimento, use: `EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend`
 
 ## 🧪 Testando
 

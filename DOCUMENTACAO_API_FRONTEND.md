@@ -486,7 +486,8 @@ Authorization: Bearer <access_token>
 4. Para pagamentos parcelados: 
    - Primeira parcela confirmada (`PAYMENT_CONFIRMED`) → Order vai para `CONFIRMED`
    - Última parcela recebida (`PAYMENT_RECEIVED`) → Order vai para `PAID`
-5. Tudo automático! 🎉
+5. **Email automático IMEDIATO:** Quando o pedido é confirmado, um email é enviado **IMEDIATAMENTE** ao proprietário do e-commerce com todos os dados de entrega (cliente, endereço, produtos)
+6. Tudo automático! 🎉
 
 ---
 

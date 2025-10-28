@@ -20,4 +20,8 @@ ipython>=8.0           # shell interativo opcional
 django-debug-toolbar>=4.0  # depuração no dev
 python-dotenv>=1.0      # ler .env local
 
+# Utilitários
+python-dateutil>=2.8.0  # parsing de datas
+pytz>=2024.1  # fusos horários
+
 requests

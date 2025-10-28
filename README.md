@@ -1,32 +1,42 @@
-# API de Gateway de Pagamento e Cálculo de Frete
+# API de Gateway de Pagamento
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Django](https://img.shields.io/badge/Django-5.0-green.svg)](https://www.djangoproject.com/)
 
 ## Descrição
 
-Este projeto é uma API RESTful para servir como gateway de pagamento e realizar cálculos de frete. Construído com Python e Django, o projeto é totalmente containerizado com Docker, facilitando a configuração e o deploy em qualquer ambiente.
+API RESTful para gateway de pagamentos integrado com **Asaas**. Sistema completo para gerenciamento de pedidos, autenticação de usuários e processamento de pagamentos via PIX e cartão de crédito.
+
+Construído com Python e Django seguindo princípios de **Domain-Driven Design (DDD)**, o projeto é totalmente containerizado com Docker.
 
 ## Funcionalidades
 
-- **Processamento de Pagamentos:** Integração com serviços de pagamento para processar transações.
-- **Cálculo de Frete:** Cálculo de custos de envio baseado em diferentes critérios.
-- **Gerenciamento de Pedidos:** Funcionalidades para criar, visualizar e gerenciar pedidos.
-- **Autenticação e Autorização:** Endpoints seguros com autenticação baseada em token.
-- **Cache de Alto Desempenho:** Uso de Redis para cachear consultas frequentes e melhorar a performance.
+- 🔐 **Autenticação JWT:** Sistema seguro de autenticação com refresh tokens
+- 👥 **Gestão de Clientes:** CRUD completo + integração automática com Asaas
+- 📦 **Gestão de Pedidos:** Criação, consulta e cancelamento de pedidos
+- 💳 **Checkout Asaas:** Geração automática de links de pagamento
+- 🔔 **Webhooks:** Processamento automático de notificações de pagamento
+- 📊 **Status Tracking:** Acompanhamento de status de pedidos em tempo real
+- 🏗️ **Arquitetura DDD:** Separação clara de responsabilidades por módulos
 
 ## Tecnologias Utilizadas
 
-- **Backend:** Python, Django, Django REST Framework
-- **Banco de Dados:** PostgreSQL
-- **Cache:** Redis
+- **Backend:** Python 3.11+, Django 5.0, Django REST Framework
+- **Banco de Dados:** PostgreSQL 17
+- **Cache:** Redis 7
+- **Gateway de Pagamento:** [Asaas](https://www.asaas.com)
+- **Autenticação:** JWT (Simple JWT)
 - **Containerização:** Docker, Docker Compose
+- **Arquitetura:** Domain-Driven Design (DDD)
 
-## Configuração do Projeto
+## 🚀 Início Rápido
 
 ### Pré-requisitos
 
 - [Docker](https://www.docker.com/get-started)
 - [Docker Compose](https://docs.docker.com/compose/install/)
+- Conta no [Asaas](https://www.asaas.com) (sandbox para testes)
 
 ### Instalação
 
@@ -69,25 +79,170 @@ Este projeto é uma API RESTful para servir como gateway de pagamento e realizar
 
     A aplicação estará disponível em `http://localhost:8000` (ou na porta que você configurou em `.env`).
 
-## Configuração
+## 📚 Documentação
 
-As seguintes variáveis de ambiente podem ser configuradas no arquivo `.env`:
+- **[Documentação para Frontend](./DOCUMENTACAO_API_FRONTEND.md)** - Guia completo para integração
+- **[Fluxo Completo da API](./FLUXO_API_COMPLETO.md)** - Documentação técnica detalhada
 
-| Variável          | Descrição                                               | Valor Padrão (dev)          |
-| ----------------- | ------------------------------------------------------- | --------------------------- |
-| `ENV`             | Ambiente de execução (`dev` ou `prod`)                  | `dev`                       |
-| `SECRET_KEY`      | Chave secreta do Django                                 | (gerar uma nova)            |
-| `DEBUG`           | Ativa/desativa o modo de debug do Django                | `True`                      |
-| `ALLOWED_HOSTS`   | Hosts permitidos para a aplicação                       | `localhost,127.0.0.1`       |
-| `PORT`            | Porta em que a aplicação web será exposta               | `8000`                      |
-| `POSTGRES_DB`     | Nome do banco de dados PostgreSQL                       | `api_db`                    |
-| `POSTGRES_USER`   | Usuário do banco de dados                               | `user`                      |
-| `POSTGRES_PASSWORD` | Senha do banco de dados                                 | `password`                  |
-| `POSTGRES_HOST`   | Host do banco de dados (nome do serviço no Docker)      | `db`                        |
-| `POSTGRES_PORT`   | Porta do banco de dados                                 | `5432`                      |
-| `REDIS_HOST`      | Host do Redis (nome do serviço no Docker)               | `redis`                     |
-| `REDIS_PORT`      | Porta do Redis                                          | `6379`                      |
+## 🏗️ Arquitetura
 
-## Licença
+### Módulos
+
+```
+src/modules/
+├── usuario/       # Autenticação e usuários
+├── cliente/       # Perfil de clientes + Asaas
+├── pedido/       # Gestão de pedidos
+├── checkout/      # Links de pagamento (Asaas)
+├── pagamento/     # Gestão de pagamentos
+└── webhook/       # Processamento de notificações
+```
+
+### Fluxo de Dados
+
+```
+Frontend → API → PostgreSQL
+              ↓
+            Asaas ← Webhook
+```
+
+## ⚙️ Configuração
+
+### Variáveis de Ambiente
+
+Crie um arquivo `.env` baseado em `.env.example`:
+
+```bash
+# Aplicação
+ENV=dev
+DEBUG=True
+SECRET_KEY=sua-chave-secreta
+PORT=8000
+
+# PostgreSQL
+POSTGRES_DB=api_pagamento
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# Asaas (obrigatório)
+ASAAS_API_KEY=sua-api-key-asaas
+ASAAS_BASE_URL=https://sandbox.asaas.com/api/v3
+```
+
+**Importante:** Obtenha sua `ASAAS_API_KEY` em [https://www.asaas.com](https://www.asaas.com)
+
+## 📦 Endpoints Principais
+
+### Autenticação
+- `POST /users/register/` - Registrar usuário
+- `POST /users/login/` - Login
+- `POST /users/refresh-token/` - Renovar token
+- `POST /users/logout/` - Logout
+
+### Cliente
+- `POST /clients/create/` - Criar perfil
+- `GET /clients/detail/{id}/` - Ver perfil
+- `PUT /clients/update/{id}/` - Atualizar perfil
+
+### Pedido
+- `POST /orders/create/` - Criar pedido
+- `GET /orders/detail/{id}/` - Ver pedido
+- `GET /orders/my-orders/` - Listar meus pedidos
+- `POST /orders/cancel/{id}/` - Cancelar pedido
+
+### Checkout
+- `POST /checkouts/create/` - Criar link de pagamento
+- `GET /checkouts/detail/{id}/` - Ver checkout
+
+### Webhook
+- `POST /webhooks/receive/` - Recebe notificações do Asaas (automático)
+
+## 🔐 Autenticação
+
+Todas as requisições (exceto login/registro) requerem header:
+
+```
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
+```
+
+Token expira em **1 hora**. Use `/users/refresh-token/` para renovar.
+
+## 📊 Status dos Pedidos
+
+| Status | Descrição |
+|--------|-----------|
+| `PENDING` | Aguardando pagamento |
+| `CONFIRMED` | Confirmado (pagamento confirmado, aguardando liquidação) |
+| `PAID` | Pago e recebido (dinheiro na conta bancária) |
+| `PREPARING` | Em preparação (marcado manualmente) |
+| `CANCELLED` | Cancelado |
+
+**Detalhes:**
+- **Pagamento à vista:** `PENDING` → `CONFIRMED` → `PAID`
+- **Pagamento parcelado:** `PENDING` → `CONFIRMED` (após 1ª parcela) → `PAID` (após última parcela)
+
+## 🧪 Testando
+
+### 1. Criar usuário
+```bash
+curl -X POST http://localhost:8000/users/register/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "João Silva",
+    "email": "joao@test.com",
+    "password": "MinhaSenh@123"
+  }'
+```
+
+### 2. Login
+```bash
+curl -X POST http://localhost:8000/users/login/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "joao@test.com",
+    "password": "MinhaSenh@123"
+  }'
+```
+
+### 3. Criar pedido (requer token)
+```bash
+curl -X POST http://localhost:8000/orders/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "items": [
+      {
+        "product_id": "PROD001",
+        "product_name": "Produto A",
+        "quantity": 2,
+        "unit_price": 100.00
+      }
+    ]
+  }'
+```
+
+## 🐛 Troubleshooting
+
+### Erro: "Token não informado"
+- Certifique-se de incluir o header `Authorization: Bearer <token>`
+
+### Erro: "Cliente não encontrado"
+- Execute `POST /clients/create/` para criar perfil
+
+### Banco não inicia
+```bash
+docker-compose down
+docker-compose up -d
+```
+
+## 📄 Licença
 
 Este projeto está licenciado sob a [Licença MIT](LICENSE).
+
+⭐ **Star este projeto se ele te ajudou!** ⭐

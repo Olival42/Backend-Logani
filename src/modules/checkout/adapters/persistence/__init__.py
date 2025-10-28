@@ -1,0 +1,1 @@
+# Módulo de persistência do checkout

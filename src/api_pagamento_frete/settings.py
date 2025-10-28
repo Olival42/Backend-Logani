@@ -37,7 +37,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'modules.usuario',
-    'modules.cliente'
+    'modules.cliente',
+    'modules.checkout',
+    'modules.pedido',
+    'modules.pagamento',
+    'modules.webhook',
 ]
 
 MIDDLEWARE = [
@@ -130,3 +134,8 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Asaas API Configuration
+ASAAS_API_URL = os.getenv('ASAAS_API_URL', 'https://api-sandbox.asaas.com/v3')
+ASAAS_API_TOKEN = os.getenv('ASAAS_API_TOKEN')
+ASAAS_ENVIRONMENT = os.getenv('ASAAS_ENVIRONMENT', 'sandbox')  # sandbox or productionvariáveis de ambiente")

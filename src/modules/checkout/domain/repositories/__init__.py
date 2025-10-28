@@ -1,0 +1,1 @@
+# Repositórios de domínio do checkout

@@ -1,8 +1,5 @@
-from django.urls import path
-from modules.cliente.application.web.views import ClientCreateView, ClientDetailView, ClientUpdateView
+from django.urls import path, include
 
 urlpatterns = [
-    path('register/', ClientCreateView.as_view(), name='client-create'),
-    path('<uuid:client_id>/', ClientDetailView.as_view(), name='client-detail'),
-    path('<uuid:client_id>/update/', ClientUpdateView.as_view(), name='client-update'),
+    path('', include('modules.cliente.application.web.asaas_urls')),
 ]

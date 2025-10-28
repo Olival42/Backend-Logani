@@ -86,8 +86,6 @@ class WebhookNotificationService:
             result = {}
             
             # Processa de acordo com o tipo de evento
-            print(f"[DEBUG] Processando evento: {notification.event}")
-            
             if notification.event == 'PAYMENT_CONFIRMED':
                 result = self._process_payment_confirmed(notification)
             elif notification.event == 'PAYMENT_RECEIVED':
@@ -215,6 +213,10 @@ class WebhookNotificationService:
                     if order.is_pending():
                         order.confirm()
                         self.order_repository.update(order)
+                        
+                        # Envia email imediatamente
+                        self._send_order_confirmed_email(order)
+                    
                     result['order_status'] = order.status
         
         return result
@@ -231,8 +233,6 @@ class WebhookNotificationService:
     
     def _process_payment_received(self, notification: WebhookNotification) -> Dict[str, Any]:
         """Processa pagamento recebido (PIX)"""
-        print(f"[DEBUG] Processando PAYMENT_RECEIVED - installment_id: {notification.installment_id}, description: {notification.description}")
-        
         # Busca Payment com estratégia em cascata
         payment = None
         
@@ -251,11 +251,9 @@ class WebhookNotificationService:
         # 4. Busca por installment_id - para parcelamento
         if not payment and notification.installment_id:
             payments_by_installment = self.payment_repository.get_by_installment_id(notification.installment_id)
-            print(f"[DEBUG] Buscando por installment_id - encontrados {len(payments_by_installment) if payments_by_installment else 0} payments")
             if payments_by_installment:
                 # Pega o primeiro payment do parcelamento
                 payment = payments_by_installment[0]
-                print(f"[DEBUG] Payment encontrado por installment_id: {payment.id}")
         
         result = {
             'success': False,
@@ -264,7 +262,6 @@ class WebhookNotificationService:
         
         # Se não encontrou nenhum payment E tem installment_id, é uma nova parcela e precisa buscar o client e order
         if not payment and notification.installment_id and notification.customer_id:
-            print(f"[DEBUG] Nenhum payment encontrado, mas tem installment_id - tentando buscar cliente e criar payment")
             # Busca o cliente pelo customer_id do Asaas
             try:
                 from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
@@ -314,7 +311,6 @@ class WebhookNotificationService:
                                 new_payment.installments = total_installments
                         
                         payment = self.payment_repository.save(new_payment)
-                        print(f"[DEBUG] Novo payment criado para parcea: {payment.id}")
             except Exception as e:
                 print(f"[DEBUG] Erro ao criar payment para parcela: {str(e)}")
         
@@ -455,7 +451,6 @@ class WebhookNotificationService:
                             
                             # Recarrega todos os payments novamente após o save para ter o número correto
                             all_payments = self.payment_repository.get_by_order(order.id)
-                            print(f"[DEBUG] Total de payments no pedido após save: {len(all_payments)}")
                             
                             # Re-conta manualmente para garantir que estamos contando corretamente
                             actual_paid_count = 0
@@ -465,19 +460,17 @@ class WebhookNotificationService:
                                         if pay.description and re.search(r'Parcela\s+\d+\s+de\s+\d+', pay.description):
                                             actual_paid_count += 1
                             
-                            print(f"[DEBUG] Parcelamento - Total: {total_installments}, Pagas: {actual_paid_count}")
-                            
                             # IMPORTANTE: Verificamos se actual_paid_count >= total_installments
                             # Isso significa que TODAS as parcelas foram recebidas
                             if actual_paid_count >= total_installments:
-                                print(f"[DEBUG] Todas as parcelas foram pagas ({actual_paid_count}/{total_installments}), mudando pedido para PAID")
                                 # Todas as parcelas foram recebidas: muda para PAID
                                 if order.status != 'PAID':
                                     order.mark_as_paid()
                                     self.order_repository.update(order)
                                     order_status_updated = True
-                            else:
-                                print(f"[DEBUG] Ainda faltam parcelas ({actual_paid_count}/{total_installments}), pedido continua como {order.status}")
+                                    
+                                    # Envia email imediatamente
+                                    self._send_order_confirmed_email(order)
                         else:
                             # Se não conseguiu determinar total de parcelas, pelo menos confirma
                             if order.is_pending():
@@ -489,6 +482,9 @@ class WebhookNotificationService:
                             order.mark_as_paid()
                             self.order_repository.update(order)
                             order_status_updated = True
+                            
+                            # Envia email imediatamente
+                            self._send_order_confirmed_email(order)
             
             # Recarrega o pedido para pegar o status atualizado
             final_order_status = None
@@ -496,7 +492,6 @@ class WebhookNotificationService:
                 final_order = self.order_repository.get_by_id(payment.order_id)
                 if final_order:
                     final_order_status = final_order.status
-                    print(f"[DEBUG] Status final do pedido: {final_order_status}")
             
             result = {
                 'success': True,
@@ -725,9 +720,6 @@ class WebhookNotificationService:
         # Busca todos os pagamentos do pedido
         order_payments = self.payment_repository.get_by_order(order_id)
         
-        print(f"[DEBUG] Contando parcelas pagas - order_id: {order_id}, installment_id: {installment_id}")
-        print(f"[DEBUG] Total de payments do pedido: {len(order_payments) if order_payments else 0}")
-        
         if not order_payments:
             return 0
         
@@ -740,15 +732,9 @@ class WebhookNotificationService:
             if pay.description and re.search(r'Parcela\s+\d+\s+de\s+\d+', pay.description):
                 is_valid_installment = True
             
-            print(f"[DEBUG] Payment {pay.asaas_id}: install_id={pay.installment_id}, status={pay.status}, desc={pay.description}")
-            
             if pay.installment_id == installment_id and pay.status in ['PAID', 'RECEIVED'] and is_valid_installment:
                 paid_count += 1
-                print(f"[DEBUG] ✓ Payment contado como pago (parcela válida)")
-            elif pay.installment_id == installment_id and pay.status in ['PAID', 'RECEIVED'] and not is_valid_installment:
-                print(f"[DEBUG] ✗ Payment NÃO contado (sem descrição válida de parcela)")
         
-        print(f"[DEBUG] Total de parcelas pagas: {paid_count}")
         return paid_count
     
     def _get_total_installments_from_description(self, description: str) -> Optional[int]:
@@ -812,4 +798,30 @@ class WebhookNotificationService:
             return Decimal(str(value))
         except:
             return None
+    
+    def _send_order_confirmed_email(self, order: Order) -> bool:
+        """
+        Envia email de notificação quando um pedido é confirmado
+        
+        Args:
+            order: Entidade do pedido confirmado
+            
+        Returns:
+            bool: True se o email foi enviado com sucesso
+        """
+        try:
+            from modules.email.domain.services.email_service import EmailService
+            from modules.cliente.domain.entities.client_entity import Client
+            
+            # Obtém o cliente do pedido
+            client = order.client
+            
+            # Envia o email
+            email_service = EmailService()
+            success = email_service.send_order_confirmed_email(order, client)
+            
+            return success
+            
+        except Exception as e:
+            return False
 

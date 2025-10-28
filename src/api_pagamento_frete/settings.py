@@ -139,3 +139,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 ASAAS_API_URL = os.getenv('ASAAS_API_URL', 'https://api-sandbox.asaas.com/v3')
 ASAAS_API_TOKEN = os.getenv('ASAAS_API_TOKEN')
 ASAAS_ENVIRONMENT = os.getenv('ASAAS_ENVIRONMENT', 'sandbox')  # sandbox or productionvariáveis de ambiente")
+
+# Order Configuration
+DAYS_TO_CANCEL = int(os.getenv('DAYS_TO_CANCEL', '2'))

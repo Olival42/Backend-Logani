@@ -114,6 +114,11 @@ class OrderRepository(IOrderRepository):
                 province=address_model.province
             )
         
+        # Obtém o email do usuário se existir
+        client_email = None
+        if client_model.user and hasattr(client_model.user, 'email'):
+            client_email = client_model.user.email
+        
         client_entity = ClientEntity(
             id=str(client_model.id),
             name=client_model.name,
@@ -121,7 +126,8 @@ class OrderRepository(IOrderRepository):
             phone=client_model.phone or '',
             mobile_phone=client_model.mobile_phone or '',
             address=address_entity or AddressEntity('', '', '', '', '', '', ''),
-            asaas_id=client_model.asaas_id
+            asaas_id=client_model.asaas_id,
+            email=client_email
         )
         
         # Converte itens

@@ -245,6 +245,26 @@ class OrderService:
         order.cancel()
         updated_order = self.order_repository.update(order)
         
+        # Envia emails de notificação de cancelamento de forma assíncrona
+        try:
+            # Serializa dados para enviar para as tasks
+            order_data = self._serialize_order(updated_order)
+            client_data = self._serialize_client(updated_order.client)
+            
+            # Chama tasks Celery assíncronas
+            from modules.email.tasks import (
+                send_order_cancelled_email_async,
+                send_order_cancelled_email_to_customer_async
+            )
+            
+            # Envia emails em background
+            send_order_cancelled_email_async.delay(order_data, client_data, refund_results)
+            send_order_cancelled_email_to_customer_async.delay(order_data, client_data)
+            
+        except Exception as e:
+            # Não falha o cancelamento se o email falhar, apenas registra o erro
+            print(f"Erro ao enviar emails de cancelamento: {e}")
+        
         return {
             'order_id': str(updated_order.id),
             'external_reference': updated_order.external_reference,
@@ -275,4 +295,53 @@ class OrderService:
             'status': updated_order.status
         }
     
+    def _serialize_order(self, order: Order) -> Dict[str, Any]:
+        """Serializa entidade Order para Dict"""
+        items_data = [
+            {
+                'product_id': item.product_id,
+                'product_name': item.product_name,
+                'quantity': item.quantity,
+                'unit_price': float(item.unit_price),
+                'total_price': float(item.total_price)
+            }
+            for item in order.items
+        ]
+        
+        return {
+            'id': str(order.id),
+            'external_reference': order.external_reference,
+            'subtotal': float(order.subtotal),
+            'total': float(order.total),
+            'status': order.status,
+            'notes': order.notes,
+            'created_at': order.created_at.isoformat() if order.created_at else None,
+            'updated_at': order.updated_at.isoformat() if order.updated_at else None,
+            'confirmed_at': order.confirmed_at.isoformat() if order.confirmed_at else None,
+            'items': items_data
+        }
+    
+    def _serialize_client(self, client: 'Client') -> Dict[str, Any]:
+        """Serializa entidade Client para Dict"""
+        address_data = {}
+        if client.address:
+            address_data = {
+                'address': client.address.address,
+                'number': client.address.number,
+                'complement': client.address.complement or '',
+                'province': client.address.province,
+                'city': client.address.city,
+                'state': client.address.state,
+                'postal_code': client.address.postal_code
+            }
+        
+        return {
+            'id': str(client.id),
+            'name': client.name,
+            'cpf': client.cpf,
+            'phone': client.phone,
+            'mobile_phone': client.mobile_phone,
+            'email': client.email,
+            'address': address_data
+        }
 

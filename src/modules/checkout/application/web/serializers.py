@@ -69,32 +69,35 @@ class CreateCheckoutSerializer(serializers.Serializer):
     
     # URLs de callback (opcionais)
     successUrl = serializers.URLField(
-        required=False,
+        required=True,
         allow_blank=True,
         allow_null=True,
         help_text="URL de redirecionamento em caso de sucesso",
         error_messages={
-            "invalid": "URL de sucesso inválida."
+            "invalid": "URL de sucesso inválida.",
+            "required": "O campo successUrl é obrigatório.",
         }
     )
     
     failureUrl = serializers.URLField(
-        required=False,
+        required=True,
         allow_blank=True,
         allow_null=True,
         help_text="URL de redirecionamento em caso de falha",
         error_messages={
-            "invalid": "URL de falha inválida."
+            "invalid": "URL de falha inválida.",
+            "required": "O campo failureUrl é obrigatório.",
         }
     )
 
     expiresUrl = serializers.URLField(
-        required=False,
+        required=True,
         allow_blank=True,
         allow_null=True,
         help_text="URL de redirecionamento em caso de expiração",
         error_messages={
-            "invalid": "URL de expiração inválida."
+            "invalid": "URL de expiração inválida.",
+            "required": "O campo expiresUrl é obrigatório.",
         }
     )
     
@@ -167,11 +170,12 @@ class CreateCheckoutSerializer(serializers.Serializer):
     # Campo para itens do checkout
     items = serializers.ListField(
         child=serializers.DictField(),
-        required=False,
+        required=True,
         allow_empty=True,
         help_text="Lista de itens do checkout",
         error_messages={
-            "invalid": "Lista de itens inválida."
+            "invalid": "Lista de itens inválida.",
+            "required": "O campo items é obrigatório.",
         }
     )
     

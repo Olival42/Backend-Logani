@@ -73,13 +73,6 @@ class CreateWebhookSerializer(serializers.Serializer):
             'PAYMENT_CHARGEBACK_REQUESTED',
             'PAYMENT_CHARGEBACK_DISPUTE',
             'PAYMENT_CHARGEBACK_REVERSAL',
-            # Eventos de cobrança (dunning)
-            'PAYMENT_DUNNING_REQUESTED',
-            'PAYMENT_DUNNING_RECEIVED',
-            # Eventos de visualização
-            'PAYMENT_BANK_SLIP_VIEWED',
-            'PAYMENT_CHECKOUT_VIEWED',
-            'PAYMENT_LINK_VIEWED',
         ]
         
         invalid_events = [event for event in value if event not in valid_events]

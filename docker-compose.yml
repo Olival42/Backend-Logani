@@ -22,6 +22,42 @@ services:
       redis:
         condition: service_started
 
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.${ENV}
+    container_name: celery-worker
+    working_dir: /code/src
+    command: celery -A api_pagamento_frete worker --loglevel=info
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.${ENV}
+    container_name: celery-beat
+    working_dir: /code/src
+    command: celery -A api_pagamento_frete beat --loglevel=info
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      celery:
+        condition: service_started
+
   db:
     image: postgres:17
     container_name: postgres_db

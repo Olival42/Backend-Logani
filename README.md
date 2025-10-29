@@ -88,6 +88,7 @@ Construído com Python e Django seguindo princípios de **Clean Architecture** e
 ## 📚 Documentação
 
 - **[Documentação Técnica - Fluxo da API](./DOCUMENTACAO_TECNICA_FLUXO_API.md)** - Arquitetura, fluxos e integração completa
+- **[Fluxo Completo da API](./FLUXO_API_COMPLETO.md)** - Documentação técnica detalhada
 
 ## 🏗️ Arquitetura
 
@@ -171,6 +172,9 @@ EMAIL_USE_TLS=True
 EMAIL_HOST_USER=
 EMAIL_HOST_PASSWORD=
 
+# Celery (já configurado automaticamente)
+CELERY_BROKER_URL=redis://redis:6379/1
+CELERY_RESULT_BACKEND=redis://redis:6379/2
 
 # Ngrok (para desenvolvimento - webhook de notificações)
 NGROK_AUTHTOKEN=seu-token-ngrok
@@ -188,35 +192,27 @@ DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
 ## 📦 Endpoints da API
 
 ### Autenticação
-- `POST /users/register/` - Registrar usuário
-- `POST /users/login/` - Login
-- `POST /users/refresh-token/` - Renovar token
-- `POST /users/logout/` - Logout
+- `POST /usuarios/register/` - Registrar usuário
+- `POST /usuarios/login/` - Login
+- `POST /usuarios/logout/` - Logout
 
-### Cliente
-- `POST /clients/create/` - Criar perfil
-- `GET /clients/detail/{id}/` - Ver perfil
-- `PUT /clients/update/{id}/` - Atualizar perfil
-- `POST /clientes/sync-asaas/`    # Sincronizar com Asaas
-
-```
+### Clientes
+- `POST /clientes/create/` - Criar cliente
+- `GET /clientes/{id}/` - Detalhes do cliente
+- `POST /clientes/sync-asaas/` - Sincronizar com Asaas
 
 ### Pedidos
-```
-POST /pedidos/create/         # Criar pedido
-GET  /pedidos/detail/{id}/    # Detalhes do pedido
-POST /pedidos/cancel/{id}/    # Cancelar pedido
-GET  /pedidos/my-orders/      # Listar pedidos do cliente
-```
+- `POST /pedidos/create/` - Criar pedido
+- `GET /pedidos/detail/{id}/` - Detalhes do pedido
+- `POST /pedidos/cancel/{id}/` - Cancelar pedido
+- `GET /pedidos/my-orders/` - Listar pedidos do cliente
 
 ### Checkout
-```
-POST /checkout/create/        # Criar checkout de pagamento
-GET  /checkout/{id}/          # Detalhes do checkout
-```
+- `POST /checkout/create/` - Criar checkout de pagamento
+- `GET /checkout/{id}/` - Detalhes do checkout
 
-### Webhook
-- `POST /webhooks/receive/` - Recebe notificações do Asaas (automático)
+### Webhooks
+- `POST /webhook/asaas/` - Receber notificações do Asaas
 
 **📖 Consulte a [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md) para detalhes completos de cada endpoint.**
 
@@ -231,6 +227,7 @@ Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
 **Importante:**
 - Token expira após uso
 - Faça logout para invalidar token
+- Veja [Documentação para Frontend](./DOCUMENTACAO_TECNICA_FRONTEND.md) para exemplos completos
 
 ## 📊 Status dos Pedidos
 
@@ -411,6 +408,7 @@ docker-compose up -d
 - [ ] Configurar variáveis de ambiente de produção
 - [ ] Configurar credenciais SMTP reais
 - [ ] Configurar backup do banco de dados
+- [ ] Configurar monitoramento (Sentry, Logs)
 - [ ] Escalar workers do Celery conforme demanda
 - [ ] Configurar HTTPS (Nginx/Caddy como proxy reverso)
 
@@ -459,3 +457,5 @@ Este projeto está licenciado sob a [Licença MIT](LICENSE).
 ---
 
 ⭐ **Star este projeto se ele te ajudou!** ⭐
+
+Contribuições são bem-vindas! Abra uma issue ou faça um pull request.

@@ -1,35 +1,40 @@
-# API de Gateway de Pagamento
+# API de Pagamento e Frete - Asaas
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![Django](https://img.shields.io/badge/Django-5.0-green.svg)](https://www.djangoproject.com/)
+[![Celery](https://img.shields.io/badge/Celery-5.3+-green.svg)](https://celeryproject.org/)
 
 ## Descrição
 
-API RESTful para gateway de pagamentos integrado com **Asaas**. Sistema completo para gerenciamento de pedidos, autenticação de usuários e processamento de pagamentos via PIX e cartão de crédito.
+API RESTful completa para gerenciamento de pedidos, pagamentos e frete, integrada com o gateway **Asaas**. Sistema robusto para e-commerce com processamento de pagamentos via PIX e cartão de crédito (parcelado ou à vista).
 
-Construído com Python e Django seguindo princípios de **Domain-Driven Design (DDD)**, o projeto é totalmente containerizado com Docker.
+Construído com Python e Django seguindo princípios de **Clean Architecture** e **Domain-Driven Design (DDD)**, com processamento assíncrono de tarefas usando **Celery** e total containerização com **Docker**.
 
-## Funcionalidades
+## ✨ Funcionalidades
 
-- 🔐 **Autenticação JWT:** Sistema seguro de autenticação com refresh tokens
-- 👥 **Gestão de Clientes:** CRUD completo + integração automática com Asaas
-- 📦 **Gestão de Pedidos:** Criação, consulta e cancelamento de pedidos
-- 💳 **Checkout Asaas:** Geração automática de links de pagamento
-- 🔔 **Webhooks:** Processamento automático de notificações de pagamento
-- 📊 **Status Tracking:** Acompanhamento de status de pedidos em tempo real
-- 📧 **Notificações por Email:** Emails automáticos para pedidos confirmados
-- 🏗️ **Arquitetura DDD:** Separação clara de responsabilidades por módulos
+- 🔐 **Autenticação JWT:** Sistema seguro de autenticação com tokens temporários
+- 👥 **Gestão de Clientes:** CRUD completo + sincronização automática com Asaas
+- 📦 **Gestão de Pedidos:** Criação, consulta, cancelamento e rastreamento de status
+- 💳 **Checkout Completo:** Geração de links de pagamento PIX e Cartão de Crédito
+- 💰 **Pagamentos Parcelados:** Suporte a até 12 parcelas com gestão automática
+- 🔔 **Webhooks Inteligentes:** Processamento automático de notificações de pagamento
+- ↩️ **Estorno Automático:** Cancelamento de pedidos com estorno automático
+- 📧 **Emails Assíncronos:** Notificações por email (Celery) - performance otimizada
+- 🏗️ **Arquitetura Limpa:** Clean Architecture + DDD + Repository Pattern
 
-## Tecnologias Utilizadas
+## 🛠️ Tecnologias
 
-- **Backend:** Python 3.11+, Django 5.0, Django REST Framework
-- **Banco de Dados:** PostgreSQL 17
-- **Cache:** Redis 7
-- **Gateway de Pagamento:** [Asaas](https://www.asaas.com)
-- **Autenticação:** JWT (Simple JWT)
-- **Containerização:** Docker, Docker Compose
-- **Arquitetura:** Domain-Driven Design (DDD)
+| Categoria | Tecnologia |
+|-----------|-----------|
+| **Backend** | Python 3.11+, Django 5.0, Django REST Framework |
+| **Banco de Dados** | PostgreSQL 17 |
+| **Cache/Messaging** | Redis 7 |
+| **Processamento Assíncrono** | Celery 5.3 |
+| **Gateway de Pagamento** | [Asaas API](https://docs.asaas.com/) |
+| **Autenticação** | JWT (PyJWT) |
+| **Containerização** | Docker, Docker Compose |
+| **Arquitetura** | Clean Architecture + DDD |
 
 ## 🚀 Início Rápido
 
@@ -82,8 +87,7 @@ Construído com Python e Django seguindo princípios de **Domain-Driven Design (
 
 ## 📚 Documentação
 
-- **[Documentação para Frontend](./DOCUMENTACAO_API_FRONTEND.md)** - Guia completo para integração
-- **[Fluxo Completo da API](./FLUXO_API_COMPLETO.md)** - Documentação técnica detalhada
+- **[Documentação Técnica - Fluxo da API](./DOCUMENTACAO_TECNICA_FLUXO_API.md)** - Arquitetura, fluxos e integração completa
 
 ## 🏗️ Arquitetura
 
@@ -105,7 +109,28 @@ src/modules/
 ```
 Frontend → API → PostgreSQL
               ↓
-            Asaas ← Webhook
+            Asaas ← Webhook → Celery (Emails Assíncronos)
+              ↓
+         Redis Cache/MQ
+```
+
+### Comandos Docker
+
+```bash
+# Iniciar todos os serviços
+docker-compose up -d
+
+# Ver logs
+docker-compose logs -f
+
+# Ver logs do Celery
+docker-compose logs -f celery
+
+# Reiniciar um serviço
+docker-compose restart celery
+
+# Parar tudo
+docker-compose down
 ```
 
 ## ⚙️ Configuração
@@ -146,16 +171,21 @@ EMAIL_USE_TLS=True
 EMAIL_HOST_USER=
 EMAIL_HOST_PASSWORD=
 
-# Ngrok (para desenvolvimento)
+
+# Ngrok (para desenvolvimento - webhook de notificações)
 NGROK_AUTHTOKEN=seu-token-ngrok
+
+# Configurações
+DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
 ```
 
 **Importante:** 
-- Obtenha sua `ASAAS_API_KEY` em [https://www.asaas.com](https://www.asaas.com)
-- O sistema envia emails automáticos para `OWNER_EMAIL` quando pedidos são confirmados
-- Configure suas credenciais de email para receber notificações em produção
+- Obtenha sua `ASAAS_API_TOKEN` em [https://www.asaas.com](https://www.asaas.com)
+- Configure o `OWNER_EMAIL` para receber notificações automáticas
+- Emails são processados de forma assíncrona via Celery (melhor performance)
+- O sistema inclui 3 serviços no Docker: `web`, `celery` (emails) e `celery-beat` (agendamento)
 
-## 📦 Endpoints Principais
+## 📦 Endpoints da API
 
 ### Autenticação
 - `POST /users/register/` - Registrar usuário
@@ -167,19 +197,28 @@ NGROK_AUTHTOKEN=seu-token-ngrok
 - `POST /clients/create/` - Criar perfil
 - `GET /clients/detail/{id}/` - Ver perfil
 - `PUT /clients/update/{id}/` - Atualizar perfil
+- `POST /clientes/sync-asaas/`    # Sincronizar com Asaas
 
-### Pedido
-- `POST /orders/create/` - Criar pedido
-- `GET /orders/detail/{id}/` - Ver pedido
-- `GET /orders/my-orders/` - Listar meus pedidos
-- `POST /orders/cancel/{id}/` - Cancelar pedido
+```
+
+### Pedidos
+```
+POST /pedidos/create/         # Criar pedido
+GET  /pedidos/detail/{id}/    # Detalhes do pedido
+POST /pedidos/cancel/{id}/    # Cancelar pedido
+GET  /pedidos/my-orders/      # Listar pedidos do cliente
+```
 
 ### Checkout
-- `POST /checkouts/create/` - Criar link de pagamento
-- `GET /checkouts/detail/{id}/` - Ver checkout
+```
+POST /checkout/create/        # Criar checkout de pagamento
+GET  /checkout/{id}/          # Detalhes do checkout
+```
 
 ### Webhook
 - `POST /webhooks/receive/` - Recebe notificações do Asaas (automático)
+
+**📖 Consulte a [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md) para detalhes completos de cada endpoint.**
 
 ## 🔐 Autenticação
 
@@ -189,7 +228,9 @@ Todas as requisições (exceto login/registro) requerem header:
 Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
 ```
 
-Token expira em **1 hora**. Use `/users/refresh-token/` para renovar.
+**Importante:**
+- Token expira após uso
+- Faça logout para invalidar token
 
 ## 📊 Status dos Pedidos
 
@@ -205,91 +246,216 @@ Token expira em **1 hora**. Use `/users/refresh-token/` para renovar.
 - **Pagamento à vista:** `PENDING` → `CONFIRMED` → `PAID`
 - **Pagamento parcelado:** `PENDING` → `CONFIRMED` (após 1ª parcela) → `PAID` (após última parcela)
 
-## 📧 Notificações por Email
+## 📧 Sistema de Emails Assíncronos
 
-O sistema envia emails automáticos quando pedidos são confirmados.
+O sistema utiliza **Celery** para processamento assíncrono de emails, garantindo **performance máxima** (<1s de resposta) nas APIs.
+
+### Tipos de Emails Enviados
+
+1. **Pedido Confirmado** → Email ao proprietário com detalhes completos
+2. **Pedido Cancelado** → Email ao proprietário e ao cliente
+3. **Estorno Processado** → Email ao cliente com informações de crédito
+
+### Performance
+
+| Operação | Tempo Síncrono | Tempo Assíncrono |
+|----------|---------------|------------------|
+| Cancelar Pedido | ~10 segundos | <1 segundo |
+| Confirmar Pedido | ~10 segundos | <1 segundo |
 
 ### Como Funciona
 
-1. **Quando um pedido é confirmado** (via webhook), o sistema envia email **IMEDIATAMENTE**
-2. **Email é enviado** automaticamente para o proprietário do e-commerce
-3. **Email inclui:** 
-   - Dados do pedido (referência, total, itens)
-   - Informações do cliente (nome, CPF, contatos)
-   - Endereço completo para entrega
-   - Lista de produtos para embalagem/frete
-
-### Configuração
-
-Configure as variáveis no `.env`:
-```bash
-OWNER_EMAIL=seu-email@exemplo.com
-EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USE_TLS=True
-EMAIL_HOST_USER=seu-email@gmail.com
-EMAIL_HOST_PASSWORD=senha-de-app
+```
+API → Serializa dados → Enfileira no Redis → Retorna resposta
+                                           ↓
+                                      Celery Worker
+                                           ↓
+                                      Envia Email
 ```
 
-**Nota:** Para desenvolvimento, use: `EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend`
+### Logs e Monitoramento
 
-## 🧪 Testando
-
-### 1. Criar usuário
 ```bash
-curl -X POST http://localhost:8000/users/register/ \
+# Ver logs do Celery em tempo real
+docker-compose logs -f celery
+
+# Ver status dos workers
+docker exec celery-worker celery -A api_pagamento_frete inspect active
+```
+
+## 🧪 Testando a API
+
+### 1. Criar Usuário
+```bash
+curl -X POST http://localhost:8000/api/usuarios/register/ \
   -H "Content-Type: application/json" \
   -d '{
     "name": "João Silva",
-    "email": "joao@test.com",
-    "password": "MinhaSenh@123"
+    "email": "joao@example.com",
+    "password": "senha123"
   }'
 ```
 
 ### 2. Login
 ```bash
-curl -X POST http://localhost:8000/users/login/ \
+curl -X POST http://localhost:8000/api/usuarios/login/ \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "joao@test.com",
-    "password": "MinhaSenh@123"
+    "email": "joao@example.com",
+    "password": "senha123"
   }'
 ```
 
-### 3. Criar pedido (requer token)
+### 3. Criar Cliente
 ```bash
-curl -X POST http://localhost:8000/orders/create/ \
+curl -X POST http://localhost:8000/api/clientes/create/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer SEU_TOKEN" \
   -d '{
+    "name": "João Silva",
+    "cpf": "12345678900",
+    "phone": "11987654321",
+    "mobile_phone": "11987654321",
+    "email": "joao@example.com",
+    "address": {
+      "address": "Rua Exemplo, 123",
+      "number": "123",
+      "city": "São Paulo",
+      "state": "SP",
+      "postal_code": "01234567"
+    }
+  }'
+```
+
+### 4. Criar Pedido
+```bash
+curl -X POST http://localhost:8000/api/pedidos/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "client_id": "uuid-do-cliente",
     "items": [
       {
-        "product_id": "PROD001",
+        "product_id": "prod_123",
         "product_name": "Produto A",
         "quantity": 2,
-        "unit_price": 100.00
+        "unit_price": 50.00
       }
     ]
   }'
 ```
 
+### 5. Criar Checkout PIX
+```bash
+curl -X POST http://localhost:8000/api/checkout/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "order_id": "uuid-do-pedido",
+    "payment_method": "PIX",
+    "installments": 1
+  }'
+```
+
+**📖 Veja mais exemplos na [Documentação Técnica para Frontend](./DOCUMENTACAO_TECNICA_FRONTEND.md)**
+
 ## 🐛 Troubleshooting
 
 ### Erro: "Token não informado"
 - Certifique-se de incluir o header `Authorization: Bearer <token>`
+- Faça login novamente para obter um novo token
 
-### Erro: "Cliente não encontrado"
-- Execute `POST /clients/create/` para criar perfil
-
-### Banco não inicia
+### Erro: "Celery worker não inicia"
 ```bash
-docker-compose down
+# Ver logs
+docker-compose logs celery
+
+# Verificar se Redis está rodando
+docker-compose ps redis
+
+# Reiniciar serviço
+docker-compose restart celery
+```
+
+### Emails não são enviados
+```bash
+# Ver logs do Celery
+docker-compose logs -f celery | grep email
+
+# Verificar se worker está processando tasks
+docker exec celery-worker celery -A api_pagamento_frete inspect registered
+```
+
+### Banco de dados não inicia
+```bash
+docker-compose down -v
 docker-compose up -d
+```
+
+### Webhook não recebe notificações
+- Certifique-se de que o Ngrok está configurado
+- Verifique a URL do webhook no painel do Asaas
+- Veja logs: `docker-compose logs -f web | grep webhook`
+
+### Performance lenta
+- Verifique se o Celery está rodando: `docker-compose ps celery`
+- Verifique logs de tempo de resposta
+- Considere escalar workers do Celery se necessário
+
+## 🚀 Deploy e Produção
+
+### Checklist de Produção
+
+- [ ] Alterar `ENV=prod` no `.env`
+- [ ] Alterar `DEBUG=False` no `.env`
+- [ ] Configurar variáveis de ambiente de produção
+- [ ] Configurar credenciais SMTP reais
+- [ ] Configurar backup do banco de dados
+- [ ] Escalar workers do Celery conforme demanda
+- [ ] Configurar HTTPS (Nginx/Caddy como proxy reverso)
+
+### Escalando Workers do Celery
+
+Edite `docker-compose.yml` e aumente o número de replicas:
+
+```yaml
+celery:
+  deploy:
+    replicas: 3  # 3 workers processando emails
+```
+
+## 📊 Monitoramento
+
+### Celery Flower (Visualização)
+
+```bash
+# Adicionar ao docker-compose.yml
+celery-flower:
+  build: .
+  command: celery -A api_pagamento_frete flower
+  ports:
+    - "5555:5555"
+```
+
+Acesse: `http://localhost:5555`
+
+### Logs
+
+```bash
+# Todos os serviços
+docker-compose logs -f
+
+# Apenas API
+docker-compose logs -f web
+
+# Apenas Celery
+docker-compose logs -f celery
 ```
 
 ## 📄 Licença
 
 Este projeto está licenciado sob a [Licença MIT](LICENSE).
+
+---
 
 ⭐ **Star este projeto se ele te ajudou!** ⭐

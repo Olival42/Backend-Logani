@@ -14,7 +14,8 @@ class Client:
         registration_date: datetime = None,
         user: User = None,
         active: bool = True,
-        asaas_id: str = None
+        asaas_id: str = None,
+        email: str = None
     ):
         self.id = id
         self.name = name
@@ -26,6 +27,7 @@ class Client:
         self.registration_date = registration_date or datetime.now(timezone.utc)
         self.active = active
         self.asaas_id = asaas_id
+        self.email = email
 
     def __repr__(self):
         return f"<Client {self.name} ({self.cpf})>"

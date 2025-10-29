@@ -544,6 +544,25 @@ class WebhookNotificationService:
                     order.cancel()
                     self.order_repository.update(order)
                     result['order_status'] = order.status
+                    
+                    # Prepara informações do pagamento para o email
+                    payment_info = {
+                        'payment_method': payment.payment_method,
+                        'value': float(payment.value) if payment.value else 0.0,
+                        'status': updated_payment.status
+                    }
+                    
+                    # Envia email de estorno para o cliente de forma assíncrona
+                    try:
+                        # Serializa dados
+                        order_data = self._serialize_order_for_email(order)
+                        client_data = self._serialize_client_for_email(order.client)
+                        
+                        # Chama task Celery assíncrona
+                        from modules.email.tasks import send_refund_notification_email_to_customer_async
+                        send_refund_notification_email_to_customer_async.delay(order_data, client_data, payment_info)
+                    except Exception as e:
+                        print(f"Erro ao enviar email de estorno para o cliente: {e}")
         
         return result
     
@@ -824,4 +843,54 @@ class WebhookNotificationService:
             
         except Exception as e:
             return False
-
+    
+    def _serialize_order_for_email(self, order: Order) -> Dict[str, Any]:
+        """Serializa entidade Order para Dict"""
+        items_data = [
+            {
+                'product_id': item.product_id,
+                'product_name': item.product_name,
+                'quantity': item.quantity,
+                'unit_price': float(item.unit_price),
+                'total_price': float(item.total_price)
+            }
+            for item in order.items
+        ]
+        
+        return {
+            'id': str(order.id),
+            'external_reference': order.external_reference,
+            'subtotal': float(order.subtotal),
+            'total': float(order.total),
+            'status': order.status,
+            'notes': order.notes,
+            'created_at': order.created_at.isoformat() if order.created_at else None,
+            'updated_at': order.updated_at.isoformat() if order.updated_at else None,
+            'confirmed_at': order.confirmed_at.isoformat() if order.confirmed_at else None,
+            'items': items_data
+        }
+    
+    def _serialize_client_for_email(self, client: Any) -> Dict[str, Any]:
+        """Serializa entidade Client para Dict"""
+        address_data = {}
+        if client.address:
+            address_data = {
+                'address': client.address.address,
+                'number': client.address.number,
+                'complement': client.address.complement or '',
+                'province': client.address.province,
+                'city': client.address.city,
+                'state': client.address.state,
+                'postal_code': client.address.postal_code
+            }
+        
+        return {
+            'id': str(client.id),
+            'name': client.name,
+            'cpf': client.cpf,
+            'phone': client.phone,
+            'mobile_phone': client.mobile_phone,
+            'email': client.email,
+            'address': address_data
+        }
+ 

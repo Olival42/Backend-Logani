@@ -96,8 +96,9 @@ class OrderService:
             notes=notes
         )
         
-        # Salva
-        saved_order = self.order_repository.save(order)
+        # Salva com transação atômica para garantir que pedido e itens sejam salvos juntos
+        with transaction.atomic():
+            saved_order = self.order_repository.save(order)
         
         # Prepara lista de itens para a resposta
         items_data = [
@@ -158,8 +159,10 @@ class OrderService:
         if order.status != 'PENDING':
             raise ValueError(f"Pedido não pode ser confirmado. Status atual: {order.status}")
         
-        order.confirm()
-        updated_order = self.order_repository.update(order)
+        # Usa transação atômica para garantir consistência
+        with transaction.atomic():
+            order.confirm()
+            updated_order = self.order_repository.update(order)
         
         return {
             'order_id': str(updated_order.id),
@@ -304,8 +307,10 @@ class OrderService:
         if not order:
             raise ValueError("Pedido não encontrado")
         
-        order.mark_as_preparing()
-        updated_order = self.order_repository.update(order)
+        # Usa transação atômica para garantir consistência
+        with transaction.atomic():
+            order.mark_as_preparing()
+            updated_order = self.order_repository.update(order)
         
         return {
             'order_id': str(updated_order.id),

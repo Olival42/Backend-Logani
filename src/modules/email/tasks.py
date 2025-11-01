@@ -3,16 +3,19 @@ Tasks Celery para envio de emails assíncronos
 """
 
 from celery import shared_task
+from celery.exceptions import Retry
 from typing import List, Dict, Any
 import json
+import traceback
 
 
-@shared_task(name='send_order_cancelled_email')
-def send_order_cancelled_email_async(order_data: Dict[str, Any], client_data: Dict[str, Any], refund_info: List[Dict] = None) -> bool:
+@shared_task(name='send_order_cancelled_email', bind=True, max_retries=3, default_retry_delay=60)
+def send_order_cancelled_email_async(self, order_data: Dict[str, Any], client_data: Dict[str, Any], refund_info: List[Dict] = None) -> bool:
     """
     Task assíncrona para enviar email de pedido cancelado ao proprietário
     
     Args:
+        self: Referência à task (usado para retry)
         order_data: Dados serializados do pedido
         client_data: Dados serializados do cliente
         refund_info: Lista com informações de estorno
@@ -36,19 +39,30 @@ def send_order_cancelled_email_async(order_data: Dict[str, Any], client_data: Di
         email_service = EmailService()
         result = email_service.send_order_cancelled_email(order, client, refund_info)
         
+        if not result:
+            # Se o email não foi enviado, tenta novamente
+            raise ValueError("Email não foi enviado com sucesso")
+        
         return result
         
     except Exception as e:
-        print(f"Erro na task de email de cancelamento: {e}")
-        return False
+        # Registra o erro completo
+        traceback.print_exc()
+        
+        # Tenta novamente se não atingiu o máximo de tentativas
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e)
+        else:
+            return False
 
 
-@shared_task(name='send_order_cancelled_email_to_customer')
-def send_order_cancelled_email_to_customer_async(order_data: Dict[str, Any], client_data: Dict[str, Any]) -> bool:
+@shared_task(name='send_order_cancelled_email_to_customer', bind=True, max_retries=3, default_retry_delay=60)
+def send_order_cancelled_email_to_customer_async(self, order_data: Dict[str, Any], client_data: Dict[str, Any]) -> bool:
     """
     Task assíncrona para enviar email de pedido cancelado ao cliente
     
     Args:
+        self: Referência à task (usado para retry)
         order_data: Dados serializados do pedido
         client_data: Dados serializados do cliente
         
@@ -71,19 +85,30 @@ def send_order_cancelled_email_to_customer_async(order_data: Dict[str, Any], cli
         email_service = EmailService()
         result = email_service.send_order_cancelled_email_to_customer(order, client)
         
+        if not result:
+            # Se o email não foi enviado, tenta novamente
+            raise ValueError("Email não foi enviado com sucesso")
+        
         return result
         
     except Exception as e:
-        print(f"Erro na task de email de cancelamento para cliente: {e}")
-        return False
+        # Registra o erro completo
+        traceback.print_exc()
+        
+        # Tenta novamente se não atingiu o máximo de tentativas
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e)
+        else:
+            return False
 
 
-@shared_task(name='send_refund_notification_email_to_customer')
-def send_refund_notification_email_to_customer_async(order_data: Dict[str, Any], client_data: Dict[str, Any], payment_info: Dict = None) -> bool:
+@shared_task(name='send_refund_notification_email_to_customer', bind=True, max_retries=3, default_retry_delay=60)
+def send_refund_notification_email_to_customer_async(self, order_data: Dict[str, Any], client_data: Dict[str, Any], payment_info: Dict = None) -> bool:
     """
     Task assíncrona para enviar email de estorno ao cliente
     
     Args:
+        self: Referência à task (usado para retry)
         order_data: Dados serializados do pedido
         client_data: Dados serializados do cliente
         payment_info: Informações sobre o pagamento estornado
@@ -107,11 +132,21 @@ def send_refund_notification_email_to_customer_async(order_data: Dict[str, Any],
         email_service = EmailService()
         result = email_service.send_refund_notification_email_to_customer(order, client, payment_info)
         
+        if not result:
+            # Se o email não foi enviado, tenta novamente
+            raise ValueError("Email não foi enviado com sucesso")
+        
         return result
         
     except Exception as e:
-        print(f"Erro na task de email de estorno: {e}")
-        return False
+        # Registra o erro completo
+        traceback.print_exc()
+        
+        # Tenta novamente se não atingiu o máximo de tentativas
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e)
+        else:
+            return False
 
 
 def _deserialize_client(client_data: Dict) -> Any:

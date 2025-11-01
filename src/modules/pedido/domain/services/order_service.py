@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 from django.conf import settings
+from django.db import transaction
 
 from modules.pedido.domain.entities.order_entity import Order, OrderItem
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
@@ -241,29 +242,46 @@ class OrderService:
                             'error': str(e)
                         })
         
-        # Cancela o pedido
-        order.cancel()
-        updated_order = self.order_repository.update(order)
-        
-        # Envia emails de notificação de cancelamento de forma assíncrona
-        try:
-            # Serializa dados para enviar para as tasks
-            order_data = self._serialize_order(updated_order)
-            client_data = self._serialize_client(updated_order.client)
+        # Usa transação atômica para garantir que se o envio de email falhar, nada seja salvo
+        with transaction.atomic():
+            # Cancela o pedido
+            order.cancel()
+            updated_order = self.order_repository.update(order)
             
-            # Chama tasks Celery assíncronas
-            from modules.email.tasks import (
-                send_order_cancelled_email_async,
-                send_order_cancelled_email_to_customer_async
-            )
-            
-            # Envia emails em background
-            send_order_cancelled_email_async.delay(order_data, client_data, refund_results)
-            send_order_cancelled_email_to_customer_async.delay(order_data, client_data)
-            
-        except Exception as e:
-            # Não falha o cancelamento se o email falhar, apenas registra o erro
-            print(f"Erro ao enviar emails de cancelamento: {e}")
+            # Envia emails de notificação de cancelamento de forma assíncrona
+            try:
+                # Serializa dados para enviar para as tasks
+                order_data = self._serialize_order(updated_order)
+                client_data = self._serialize_client(updated_order.client)
+                
+                # Chama tasks Celery assíncronas
+                from modules.email.tasks import (
+                    send_order_cancelled_email_async,
+                    send_order_cancelled_email_to_customer_async
+                )
+                
+                # Envia emails em background com retry
+                try:
+                    email_task_1 = send_order_cancelled_email_async.delay(order_data, client_data, refund_results)
+                    email_task_2 = send_order_cancelled_email_to_customer_async.delay(order_data, client_data)
+                except Exception as e:
+                    # Se falhar ao agendar as tasks, tenta novamente
+                    try:
+                        email_task_1 = send_order_cancelled_email_async.apply_async(
+                            args=[order_data, client_data, refund_results],
+                            countdown=2  # Espera 2 segundos antes de tentar novamente
+                        )
+                        email_task_2 = send_order_cancelled_email_to_customer_async.apply_async(
+                            args=[order_data, client_data],
+                            countdown=2
+                        )
+                    except Exception as retry_error:
+                        # Se ainda falhar, cancela a transação
+                        raise ValueError("Não foi possível agendar o envio de emails. Operação cancelada.")
+                
+            except Exception as e:
+                # Se qualquer parte do envio falhar, faz rollback
+                raise ValueError(f"Não foi possível enviar emails de cancelamento: {str(e)}")
         
         return {
             'order_id': str(updated_order.id),

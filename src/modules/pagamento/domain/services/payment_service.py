@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
+from django.db import transaction
 
 from modules.pagamento.domain.entities.payment_entity import Payment
 from modules.pagamento.domain.repositories.payment_repository import IPaymentRepository
@@ -124,8 +125,34 @@ class PaymentService:
             )
             payment.asaas_checkout_id = asaas_response.get('id')
             
-            # Salva pagamento
-            saved_payment = self.payment_repository.save(payment)
+            # Guarda o ID do checkout no Asaas para possível rollback
+            asaas_checkout_id = asaas_response.get('id')
+            
+            # Salva pagamento com transação atômica
+            # Se falhar, tenta fazer rollback no Asaas
+            try:
+                with transaction.atomic():
+                    saved_payment = self.payment_repository.save(payment)
+            except Exception as db_error:
+                # Se falhar ao salvar no banco, tenta cancelar o checkout no Asaas
+                if asaas_checkout_id:
+                    try:
+                        print(f"⚠️ Erro ao salvar payment no banco: {db_error}. Tentando cancelar checkout no Asaas: {asaas_checkout_id}")
+                        self.asaas_client.cancel_checkout(asaas_checkout_id)
+                        print(f"✅ Checkout {asaas_checkout_id} cancelado no Asaas com sucesso")
+                    except Exception as rollback_error:
+                        # Se falhar o rollback, agenda limpeza assíncrona
+                        print(f"❌ Erro ao cancelar checkout no Asaas: {rollback_error}")
+                        try:
+                            from modules.pagamento.tasks import cleanup_orphaned_checkouts_async
+                            # Agenda limpeza assíncrona para tentar novamente depois
+                            cleanup_orphaned_checkouts_async.delay([asaas_checkout_id])
+                            print(f"📋 Limpeza de checkout {asaas_checkout_id} agendada para execução assíncrona")
+                        except Exception as task_error:
+                            print(f"⚠️ Erro ao agendar task de limpeza: {task_error}")
+                
+                # Propaga o erro original do banco
+                raise ValueError(f"Erro ao salvar pagamento no banco de dados: {str(db_error)}")
             
             return {
                 'payment_id': str(saved_payment.id),
@@ -140,6 +167,9 @@ class PaymentService:
                 'asaas_response': asaas_response
             }
             
+        except ValueError:
+            # Re-lança ValueError sem modificar
+            raise
         except Exception as e:
             raise ValueError(f"Erro ao criar pagamento: {str(e)}")
     
@@ -220,9 +250,11 @@ class PaymentService:
             )
             
             # Atualiza status local para REFUNDING (será atualizado para REFUNDED pelo webhook)
-            payment.status = 'REFUNDING'
-            payment.updated_at = datetime.now()
-            updated_payment = self.payment_repository.save(payment)
+            # Usa transação atômica para garantir consistência
+            with transaction.atomic():
+                payment.status = 'REFUNDING'
+                payment.updated_at = datetime.now()
+                updated_payment = self.payment_repository.save(payment)
             
             return {
                 'payment_id': str(updated_payment.id),
@@ -260,9 +292,10 @@ class PaymentService:
             if payment.asaas_checkout_id:
                 self.asaas_client.cancel_checkout(payment.asaas_checkout_id)
             
-            # Cancela localmente
-            payment.cancel()
-            self.payment_repository.save(payment)
+            # Cancela localmente com transação atômica
+            with transaction.atomic():
+                payment.cancel()
+                self.payment_repository.save(payment)
             
             return {
                 'payment_id': str(payment.id),

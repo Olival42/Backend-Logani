@@ -7,9 +7,12 @@
 3. [Fluxos Principais](#fluxos-principais)
 4. [Integração com Asaas](#integração-com-asaas)
 5. [Sistema de Webhooks](#sistema-de-webhooks)
-6. [Processamento Assíncrono com Celery](#processamento-assíncrono-com-celery)
-7. [Modelagem de Dados](#modelagem-de-dados)
-8. [Endpoints da API](#endpoints-da-api)
+6. [Sistema de Emails](#sistema-de-emails)
+7. [Processamento Assíncrono com Celery](#processamento-assíncrono-com-celery)
+8. [Transações e Consistência de Dados](#transações-e-consistência-de-dados)
+9. [Modelagem de Dados](#modelagem-de-dados)
+10. [Endpoints da API](#endpoints-da-api)
+11. [Considerações de Performance](#considerações-de-performance)
 
 ---
 
@@ -31,7 +34,7 @@ Esta API gerencia o processo completo de pedidos, pagamentos e frete, integrando
 4. Pagamentos parcelados
 5. Webhooks para notificações de pagamento
 6. Cancelamento de pedidos com estorno automático
-7. Sistema de notificações por email assíncronas
+7. Sistema de notificações por email assíncronas (texto formatado)
 
 ---
 
@@ -379,6 +382,50 @@ class WebhookNotificationService:
 
 ---
 
+## Sistema de Emails
+
+### Visão Geral
+
+O sistema utiliza emails em formato texto (plain text) gerados automaticamente pelo backend. Todos os emails são enviados de forma assíncrona através de tasks Celery para não bloquear as operações principais da API.
+
+### Tipos de Email
+
+#### 1. Email de Pedido Confirmado
+- **Destinatário**: Proprietário do sistema (`OWNER_EMAIL`)
+- **Assunto**: "Novo Pedido Confirmado - {external_reference}"
+- **Conteúdo**: Informações completas do pedido, cliente, produtos e endereço de entrega
+- **Enviado quando**: Pagamento é confirmado via webhook `PAYMENT_RECEIVED`
+
+#### 2. Email de Pedido Cancelado ao Proprietário
+- **Destinatário**: Proprietário do sistema (`OWNER_EMAIL`)
+- **Assunto**: "Pedido Cancelado - {external_reference}"
+- **Conteúdo**: Detalhes do cancelamento, informações do cliente, produtos e ações necessárias
+- **Enviado quando**: Pedido é cancelado via `POST /pedidos/cancel/{id}/`
+
+#### 3. Email de Pedido Cancelado ao Cliente
+- **Destinatário**: Email do cliente cadastrado
+- **Assunto**: "Pedido Cancelado - {external_reference}"
+- **Conteúdo**: Notificação amigável sobre o cancelamento e informações sobre estorno
+- **Enviado quando**: Pedido é cancelado via `POST /pedidos/cancel/{id}/`
+
+#### 4. Email de Estorno Processado
+- **Destinatário**: Email do cliente cadastrado
+- **Assunto**: "Estorno Processado - Pedido {external_reference}"
+- **Conteúdo**: Confirmação de estorno, valor estornado e informações sobre crédito
+- **Enviado quando**: Webhook `PAYMENT_REFUNDED` é processado
+
+### Formato dos Emails
+
+Os emails são gerados em texto simples formatado, utilizando caracteres especiais para organização visual (━, ✓, ⚠️, etc.). O conteúdo inclui:
+
+- Informações do pedido (ID, data, valor, status)
+- Detalhes dos produtos/itens
+- Informações do cliente (nome, CPF, contato, endereço)
+- Instruções ou ações necessárias
+- Observações relevantes
+
+---
+
 ## Processamento Assíncrono com Celery
 
 ### Configuração
@@ -392,25 +439,31 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'America/Sao_Paulo'
 ```
 
-### Tasks Assíncronas
+### Tasks Assíncronas de Email
 
 #### 1. Email de Pedido Cancelado ao Proprietário
 ```python
-@shared_task(name='send_order_cancelled_email')
-def send_order_cancelled_email_async(order_data, client_data, refund_info):
+@shared_task(name='send_order_cancelled_email', bind=True, max_retries=3, default_retry_delay=60)
+def send_order_cancelled_email_async(self, order_data, client_data, refund_info):
     # Converte dados serializados para entidades
     client = _deserialize_client(client_data)
     order = _deserialize_order(order_data, client)
     
     # Envia email
     email_service = EmailService()
-    return email_service.send_order_cancelled_email(order, client, refund_info)
+    result = email_service.send_order_cancelled_email(order, client, refund_info)
+    
+    # Retry automático em caso de falha
+    if not result and self.request.retries < self.max_retries:
+        raise self.retry(exc=ValueError("Email não foi enviado"))
+    
+    return result
 ```
 
 #### 2. Email de Pedido Cancelado ao Cliente
 ```python
-@shared_task(name='send_order_cancelled_email_to_customer')
-def send_order_cancelled_email_to_customer_async(order_data, client_data):
+@shared_task(name='send_order_cancelled_email_to_customer', bind=True, max_retries=3, default_retry_delay=60)
+def send_order_cancelled_email_to_customer_async(self, order_data, client_data):
     client = _deserialize_client(client_data)
     order = _deserialize_order(order_data, client)
     
@@ -420,8 +473,8 @@ def send_order_cancelled_email_to_customer_async(order_data, client_data):
 
 #### 3. Email de Estorno ao Cliente
 ```python
-@shared_task(name='send_refund_notification_email_to_customer')
-def send_refund_notification_email_to_customer_async(order_data, client_data, payment_info):
+@shared_task(name='send_refund_notification_email_to_customer', bind=True, max_retries=3, default_retry_delay=60)
+def send_refund_notification_email_to_customer_async(self, order_data, client_data, payment_info):
     client = _deserialize_client(client_data)
     order = _deserialize_order(order_data, client)
     
@@ -434,25 +487,48 @@ def send_refund_notification_email_to_customer_async(order_data, client_data, pa
 ```python
 # order_service.py
 def cancel_order(self, order_id):
-    # ... lógica de cancelamento
+    # ... lógica de cancelamento e estorno
     
-    # Serializa dados
-    order_data = self._serialize_order(updated_order)
-    client_data = self._serialize_client(updated_order.client)
+    with transaction.atomic():
+        order.cancel()
+        updated_order = self.order_repository.update(order)
+        
+        # Serializa dados para as tasks
+        order_data = self._serialize_order(updated_order)
+        client_data = self._serialize_client(updated_order.client)
+        
+        # Envia tasks assíncronas (não bloqueia a resposta)
+        try:
+            send_order_cancelled_email_async.delay(order_data, client_data, refund_results)
+            send_order_cancelled_email_to_customer_async.delay(order_data, client_data)
+        except Exception as e:
+            # Se falhar ao agendar, tenta novamente após 2 segundos
+            send_order_cancelled_email_async.apply_async(
+                args=[order_data, client_data, refund_results],
+                countdown=2
+            )
+            send_order_cancelled_email_to_customer_async.apply_async(
+                args=[order_data, client_data],
+                countdown=2
+            )
     
-    # Envia tasks assíncronas (não bloqueia)
-    send_order_cancelled_email_async.delay(order_data, client_data, refund_results)
-    send_order_cancelled_email_to_customer_async.delay(order_data, client_data)
-    
-    # Retorna imediatamente
+    # Retorna imediatamente (não espera envio de email)
     return {'order_id': order.id, 'status': 'CANCELLED'}
 ```
+
+### Configuração de Retry
+
+Todas as tasks de email possuem:
+- **max_retries**: 3 tentativas
+- **default_retry_delay**: 60 segundos entre tentativas
+- **bind=True**: Permite acesso à task para retry manual
 
 ### Benefícios
 
 - **Performance**: API responde em <1s vs ~10s com emails síncronos
 - **Escalabilidade**: Tasks podem ser distribuídas entre múltiplos workers
 - **Resiliência**: Falhas no email não afetam o processo principal
+- **Retry Automático**: Sistema tenta reenviar emails que falharam
 - **Monitoramento**: Celery Flower permite monitorar execução das tasks
 
 ---
@@ -566,17 +642,74 @@ POST   /clientes/sync-asaas/      # Sincronizar com Asaas
 POST   /webhook/asaas/            # Receber webhook do Asaas
 ```
 
+### Emails
+
+**Nota**: Não há endpoint público para envio de emails. Os emails são enviados automaticamente pelo sistema em eventos específicos (cancelamento de pedido, estorno, etc.) através de tasks Celery assíncronas.
+
+---
+
+## Transações e Consistência de Dados
+
+### Transações Atômicas
+
+O sistema utiliza `transaction.atomic()` do Django para garantir consistência em operações críticas:
+
+#### Operações com Transações
+
+1. **Criação de Pedido**: Garante que pedido e itens sejam salvos juntos
+2. **Cancelamento de Pedido**: Garante que cancelamento e agendamento de emails sejam atômicos
+3. **Criação de Cliente**: Garante que cliente e endereço sejam salvos juntos
+4. **Criação de Checkout/Pagamento**: Garante que checkout e pagamento sejam salvos juntos
+5. **Criação de Usuário**: Garante consistência na criação do usuário
+
+#### Rollback Automático
+
+Quando operações com APIs externas (Asaas) falham após sucesso na API externa mas erro no banco local:
+
+1. **Rollback Imediato**: Sistema tenta cancelar/reverter a operação no Asaas imediatamente
+2. **Limpeza Assíncrona**: Se o rollback imediato falhar, agenda task Celery para limpeza posterior
+3. **Serviço de Limpeza**: `CleanupService` verifica e limpa recursos órfãos no Asaas
+
+#### Exemplo de Implementação
+
+```python
+# checkout_service.py
+def create_checkout(...):
+    # Cria no Asaas primeiro
+    asaas_response = self.asaas_client.create_checkout(...)
+    asaas_checkout_id = asaas_response.get('id')
+    
+    try:
+        # Salva localmente com transação atômica
+        with transaction.atomic():
+            saved_checkout = self.checkout_repository.save(checkout)
+            payment = self.payment_repository.save(payment)
+    except Exception as db_error:
+        # Se falhar, tenta cancelar no Asaas
+        if asaas_checkout_id:
+            try:
+                self.asaas_client.cancel_checkout(asaas_checkout_id)
+            except Exception as rollback_error:
+                # Agenda limpeza assíncrona
+                cleanup_orphaned_checkouts_async.delay([asaas_checkout_id])
+        
+        raise ValueError(f"Erro ao salvar: {str(db_error)}")
+```
+
 ---
 
 ## Considerações de Performance
 
 ### Otimizações Implementadas
 
-1. **Processamento Assíncrono**: Emails enviados via Celery
-2. **Cache Redis**: Sessões e dados temporários
-3. **Índices de Banco**: External references únicas e foreign keys
-4. **Lazy Loading**: Apenas dados necessários carregados
-5. **Serialização Específica**: Apenas campos necessários expostos
+1. **Processamento Assíncrono**: Emails enviados via Celery (não bloqueiam operações)
+2. **Transações Atômicas**: Uso de `transaction.atomic()` para garantir consistência
+3. **Cache Redis**: Sessões e dados temporários
+4. **Índices de Banco**: External references únicas e foreign keys
+5. **Lazy Loading**: Apenas dados necessários carregados
+6. **Serialização Específica**: Apenas campos necessários expostos
+7. **Retry Inteligente**: Sistema tenta reenviar emails que falharam automaticamente
+8. **Tratamento de Erros**: Erros de banco são capturados e retornados apropriadamente nas views
 
 ### Métricas Esperadas
 
@@ -703,8 +836,11 @@ services:
 - Sistema completo de pedidos
 - Integração com Asaas
 - Webhooks de pagamento
-- Emails assíncronos com Celery
+- Emails assíncronos com Celery (texto formatado)
 - Cancelamento com estorno automático
+- Transações atômicas para consistência de dados
+- Rollback automático em operações com APIs externas
+- Sistema de limpeza assíncrona para recursos órfãos
 
 ---
 

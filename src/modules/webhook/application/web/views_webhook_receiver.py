@@ -1,12 +1,10 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-import json
 
 from modules.webhook.domain.services.webhook_notification_service import WebhookNotificationService
 from modules.webhook.adapters.persistence.webhook_notification_repository_django import WebhookNotificationRepository
 from modules.pagamento.adapters.persistence.payment_repository_django import PaymentRepository
 from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
+from api_pagamento_frete.utils import SuccessResponse
 
 
 class AsaasWebhookReceiverView(APIView):
@@ -55,14 +53,15 @@ class AsaasWebhookReceiverView(APIView):
             result = notification_service.process_notification(notification)
             
             # Retorna sucesso ao ASAAS (importante para evitar reenvios)
-            return Response(
-                {'message': 'Notificação recebida e processada com sucesso', 'result': result},
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data={'result': result},
+                message='Notificação recebida e processada com sucesso'
             )
             
         except Exception as e:
-            return Response(
-                {'message': 'Erro ao processar notificação, mas foi registrado para análise'},
-                status=status.HTTP_200_OK
+            # Sempre retorna 200 OK para evitar reenvios do ASAAS
+            return SuccessResponse.ok(
+                data={'error': str(e)},
+                message='Erro ao processar notificação, mas foi registrado para análise'
             )
 

@@ -1,6 +1,4 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
 from modules.webhook.application.web.serializers import (
     CreateWebhookSerializer,
@@ -13,6 +11,7 @@ from modules.webhook.adapters.persistence.webhook_repository_django import Webho
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
 
 
 class WebhookCreateView(APIView):
@@ -26,10 +25,7 @@ class WebhookCreateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -37,18 +33,12 @@ class WebhookCreateView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Validação dos dados
         serializer = CreateWebhookSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
 
         # Criação do webhook
         webhook_service = WebhookService(WebhookRepository())
@@ -62,23 +52,17 @@ class WebhookCreateView(APIView):
                 enabled=serializer.validated_data.get('enabled', True)
             )
             
-            return Response(
-                {
-                    "message": "Webhook criado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_201_CREATED
+            return SuccessResponse.created(
+                data=result,
+                message="Webhook criado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -91,10 +75,7 @@ class WebhookListView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -102,10 +83,7 @@ class WebhookListView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Lista webhooks
         webhook_service = WebhookService(WebhookRepository())
@@ -126,19 +104,18 @@ class WebhookListView(APIView):
                 for webhook in webhooks
             ], many=True)
             
-            return Response(
-                {
-                    "message": f"Encontrados {len(webhooks)} webhooks",
-                    "data": serializer.data,
+            return SuccessResponse.ok(
+                data={
+                    "webhooks": serializer.data,
                     "count": len(webhooks)
                 },
-                status=status.HTTP_200_OK
+                message=f"Encontrados {len(webhooks)} webhooks"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -151,10 +128,7 @@ class WebhookDetailView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -162,10 +136,7 @@ class WebhookDetailView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Busca o webhook
         webhook_service = WebhookService(WebhookRepository())
@@ -173,10 +144,7 @@ class WebhookDetailView(APIView):
             webhook = webhook_service.get_webhook(webhook_id)
             
             if not webhook:
-                return Response(
-                    {"error": "Webhook não encontrado"}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return ErrorResponse.not_found("Webhook não encontrado")
             
             # Serializa os dados
             serializer = WebhookResponseSerializer({
@@ -192,18 +160,15 @@ class WebhookDetailView(APIView):
                 'updated_at': webhook.updated_at,
             })
             
-            return Response(
-                {
-                    "message": "Webhook encontrado",
-                    "data": serializer.data
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=serializer.data,
+                message="Webhook encontrado"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -216,10 +181,7 @@ class WebhookUpdateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -227,18 +189,12 @@ class WebhookUpdateView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Validação dos dados
         serializer = UpdateWebhookSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
 
         # Atualização do webhook
         webhook_service = WebhookService(WebhookRepository())
@@ -252,23 +208,17 @@ class WebhookUpdateView(APIView):
                 auth_token=serializer.validated_data.get('auth_token')
             )
             
-            return Response(
-                {
-                    "message": "Webhook atualizado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Webhook atualizado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -281,10 +231,7 @@ class WebhookDeleteView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -292,32 +239,23 @@ class WebhookDeleteView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Remoção do webhook
         webhook_service = WebhookService(WebhookRepository())
         try:
             result = webhook_service.delete_webhook(webhook_id)
             
-            return Response(
-                {
-                    "message": "Webhook removido com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Webhook removido com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 

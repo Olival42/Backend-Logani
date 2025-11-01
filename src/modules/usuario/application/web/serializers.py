@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db import DatabaseError, IntegrityError
 from modules.usuario.domain.services import UserService
 from modules.usuario.domain.entities import User
 
@@ -57,6 +58,20 @@ class UserCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 "error": {
                     "detail": str(e)
+                }
+            })
+        except (DatabaseError, IntegrityError) as e:
+            # Captura erros de banco de dados (constraints, transações, etc)
+            raise serializers.ValidationError({
+                "error": {
+                    "detail": f"Erro ao salvar no banco de dados: {str(e)}"
+                }
+            })
+        except Exception as e:
+            # Captura qualquer outro erro não esperado
+            raise serializers.ValidationError({
+                "error": {
+                    "detail": f"Erro inesperado ao criar usuário: {str(e)}"
                 }
             })
             

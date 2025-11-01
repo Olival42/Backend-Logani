@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
+from django.db import transaction
 
 from modules.checkout.domain.entities.checkout_entity import Checkout
 from modules.checkout.domain.repositories.checkout_repository import ICheckoutRepository
@@ -141,44 +142,73 @@ class CheckoutService:
                 checkout_url=checkout_url
             )
             
-            # Salva no repositório local
-            saved_checkout = self.checkout_repository.save(checkout)
+            # Guarda o ID do checkout no Asaas para possível rollback
+            asaas_checkout_id_for_rollback = asaas_checkout_id
             
-            # Cria Payment associado ao Checkout
-            payment = None
-            order_id = None
-            
-            # Tenta encontrar o pedido pelo external_reference se existir
-            if externalReference and self.order_repository:
-                try:
-                    order = self.order_repository.get_by_external_reference(externalReference)
-                    if order:
-                        order_id = order.id
-                except:
-                    pass
-            
-            # Cria o Payment se o repositório estiver disponível
-            if self.payment_repository:
-                try:
-                    payment = PaymentEntity(
-                        id=str(uuid4()),
-                        client=client_entity,
-                        value=value,
-                        payment_method=paymentMethods[0] if paymentMethods else 'UNKNOWN',
-                        order_id=order_id,
-                        asaas_checkout_id=saved_checkout.asaas_id,  # ID do checkout no Asaas
-                        status='PENDING',
-                        description=description,
-                        checkout_url=saved_checkout.checkout_url,
-                        external_reference=externalReference,
-                        installments=installments,
-                        expires_at=expires_at,
-                        created_at=datetime.now()
-                    )
-                    payment = self.payment_repository.save(payment)
-                except Exception as e:
-                    print(f"⚠️ Não foi possível criar Payment: {str(e)}")
+            # Salva no repositório local com transação atômica
+            # Se falhar, tenta fazer rollback no Asaas
+            try:
+                with transaction.atomic():
+                    saved_checkout = self.checkout_repository.save(checkout)
+                    
+                    # Cria Payment associado ao Checkout dentro da mesma transação
                     payment = None
+                    order_id = None
+                    
+                    # Tenta encontrar o pedido pelo external_reference se existir
+                    if externalReference and self.order_repository:
+                        try:
+                            order = self.order_repository.get_by_external_reference(externalReference)
+                            if order:
+                                order_id = order.id
+                        except:
+                            pass
+                    
+                    # Cria o Payment se o repositório estiver disponível
+                    if self.payment_repository:
+                        try:
+                            payment = PaymentEntity(
+                                id=str(uuid4()),
+                                client=client_entity,
+                                value=value,
+                                payment_method=paymentMethods[0] if paymentMethods else 'UNKNOWN',
+                                order_id=order_id,
+                                asaas_checkout_id=saved_checkout.asaas_id,  # ID do checkout no Asaas
+                                status='PENDING',
+                                description=description,
+                                checkout_url=saved_checkout.checkout_url,
+                                external_reference=externalReference,
+                                installments=installments,
+                                expires_at=expires_at,
+                                created_at=datetime.now()
+                            )
+                            payment = self.payment_repository.save(payment)
+                        except Exception as e:
+                            # Se falhar ao criar payment, cancela toda a transação
+                            print(f"⚠️ Erro ao criar Payment: {str(e)}")
+                            raise ValueError(f"Erro ao criar payment associado ao checkout: {str(e)}")
+            except Exception as db_error:
+                # Se falhar ao salvar no banco, tenta cancelar o checkout no Asaas
+                if asaas_checkout_id_for_rollback:
+                    try:
+                        print(f"⚠️ Erro ao salvar checkout no banco: {db_error}. Tentando cancelar checkout no Asaas: {asaas_checkout_id_for_rollback}")
+                        self.asaas_client.cancel_checkout(asaas_checkout_id_for_rollback)
+                        print(f"✅ Checkout {asaas_checkout_id_for_rollback} cancelado no Asaas com sucesso")
+                    except Exception as rollback_error:
+                        # Se falhar o rollback, agenda limpeza assíncrona
+                        print(f"❌ Erro ao cancelar checkout no Asaas: {rollback_error}")
+                        try:
+                            from modules.pagamento.tasks import cleanup_orphaned_checkouts_async
+                            # Agenda limpeza assíncrona para tentar novamente depois
+                            cleanup_orphaned_checkouts_async.delay([asaas_checkout_id_for_rollback])
+                            print(f"📋 Limpeza de checkout {asaas_checkout_id_for_rollback} agendada para execução assíncrona")
+                        except Exception as task_error:
+                            print(f"⚠️ Erro ao agendar task de limpeza: {task_error}")
+                
+                # Propaga o erro original do banco
+                if isinstance(db_error, ValueError):
+                    raise db_error
+                raise ValueError(f"Erro ao salvar checkout no banco de dados: {str(db_error)}")
             
             # Prepara os dados do cliente para a resposta
             client_data = {

@@ -1,6 +1,4 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
 from modules.usuario.application.web.serializers import (
     UserCreateSerializer,
@@ -9,6 +7,7 @@ from modules.usuario.application.web.serializers import (
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
 
 user_repository = UserRepository()
 blacklist_repository = BlacklistRepository()
@@ -22,18 +21,20 @@ class RegisterView(APIView):
         )
         if serializer.is_valid():
             user_data = serializer.save()
-
-            return Response(user_data, status=status.HTTP_201_CREATED)
+            return SuccessResponse.created(
+                data=user_data,
+                message="Usuário criado com sucesso"
+            )
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return ErrorResponse.validation_error(serializer.errors)
 
 class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data, context={"user_service": user_service})
         if serializer.is_valid():
             result = serializer.validated_data
-            return Response(result, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return SuccessResponse.ok(data=result, message="Login realizado com sucesso")
+        return ErrorResponse.validation_error(serializer.errors)
     
 class LogoutView(APIView):
     def post(self, request):
@@ -41,26 +42,26 @@ class LogoutView(APIView):
         refresh_token = request.data.get("refresh")
         
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response({"detail": "Access token não informado"}, status=status.HTTP_400_BAD_REQUEST)
+            return ErrorResponse.bad_request("Access token não informado")
         
         if not refresh_token:
-            return Response({"detail": "Refresh token obrigatório"}, status=status.HTTP_400_BAD_REQUEST)
+            return ErrorResponse.bad_request("Refresh token obrigatório")
 
         access_token = auth_header.split()[1]
 
         result = user_service.logout(access_token, refresh_token)
 
         if "Logout realizado" in result["detail"]:
-            return Response(result, status=status.HTTP_200_OK)
-        return Response(result, status=status.HTTP_400_BAD_REQUEST)
+            return SuccessResponse.ok(data=result, message="Logout realizado com sucesso")
+        return ErrorResponse.bad_request(result.get("detail", "Erro ao realizar logout"))
     
 class RefreshTokenView(APIView): 
     def post(self, request): 
         refresh_token = request.data.get("refresh") 
         if not refresh_token: 
-            return Response({"detail": "Refresh token não informado"}, status=status.HTTP_400_BAD_REQUEST) 
+            return ErrorResponse.bad_request("Refresh token não informado")
         try: 
             result = user_service.refresh_access_token(refresh_token) 
-            return Response(result, status=status.HTTP_200_OK) 
+            return SuccessResponse.ok(data=result, message="Token atualizado com sucesso")
         except ValueError as e: 
-            return Response({"detail": str(e)}, status=status.HTTP_401_UNAUTHORIZED)
+            return ErrorResponse.unauthorized(str(e))

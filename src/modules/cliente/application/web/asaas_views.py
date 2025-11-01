@@ -1,11 +1,8 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
 from modules.cliente.application.web.asaas_serializers import (
     AsaasCreateClientSerializer,
     AsaasUpdateClientSerializer,
-    AsaasSyncSerializer,
 )
 from modules.cliente.domain.services.asaas_client_service import AsaasClientService
 from modules.cliente.domain.services.client_service import ClientService
@@ -13,6 +10,7 @@ from modules.cliente.adapters.persistence.client_repository_django import Client
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
 
 
 class AsaasClientCreateView(APIView):
@@ -48,10 +46,7 @@ class AsaasClientCreateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -60,18 +55,12 @@ class AsaasClientCreateView(APIView):
             payload = user_service.authenticate(token)
             user_id = payload["user_id"]
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Validação dos dados
         serializer = AsaasCreateClientSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
 
         # Criação do cliente
         asaas_service = AsaasClientService()
@@ -81,23 +70,17 @@ class AsaasClientCreateView(APIView):
                 user_id
             )
             
-            return Response(
-                {
-                    "message": "Cliente criado com sucesso no Asaas e sincronizado no sistema local",
-                    "data": result
-                },
-                status=status.HTTP_201_CREATED
+            return SuccessResponse.created(
+                data=result,
+                message="Cliente criado com sucesso no Asaas e sincronizado no sistema local"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -134,10 +117,7 @@ class AsaasClientUpdateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -145,18 +125,12 @@ class AsaasClientUpdateView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Validação dos dados
         serializer = AsaasUpdateClientSerializer(data=request.data, partial=True)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
 
         # Atualização do cliente
         asaas_service = AsaasClientService()
@@ -166,23 +140,17 @@ class AsaasClientUpdateView(APIView):
                 serializer.validated_data
             )
             
-            return Response(
-                {
-                    "message": "Cliente atualizado com sucesso no Asaas e sincronizado no sistema local",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Cliente atualizado com sucesso no Asaas e sincronizado no sistema local"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -198,10 +166,7 @@ class AsaasClientSyncView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -209,33 +174,24 @@ class AsaasClientSyncView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Sincronização
         asaas_service = AsaasClientService()
         try:
             result = asaas_service.sync_client_to_asaas(client_id)
             
-            return Response(
-                {
-                    "message": f"Cliente {result['action']} no Asaas com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message=f"Cliente {result['action']} no Asaas com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -260,10 +216,7 @@ class AsaasClientDetailView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -271,33 +224,24 @@ class AsaasClientDetailView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Consulta no Asaas usando ID local
         asaas_service = AsaasClientService()
         try:
             result = asaas_service.get_client_from_asaas_by_local_id(client_id)
             
-            return Response(
-                {
-                    "message": "Dados do cliente recuperados do Asaas",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Dados do cliente recuperados do Asaas"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.not_found(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -347,10 +291,7 @@ class ClientByBearerTokenView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -359,28 +300,19 @@ class ClientByBearerTokenView(APIView):
             payload = user_service.authenticate(token)
             user_id = payload["user_id"]
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Busca o cliente pelo user_id
         client_service = ClientService(ClientRepository())
         try:
             result = client_service.get_client_by_bearer_token(user_id)
             
-            return Response(
-                result,
-                status=status.HTTP_200_OK
-            )
+            return SuccessResponse.ok(data=result)
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return ErrorResponse.not_found(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )

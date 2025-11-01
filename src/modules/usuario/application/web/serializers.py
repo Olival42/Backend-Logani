@@ -1,10 +1,49 @@
 from rest_framework import serializers
 from modules.usuario.domain.services import UserService
+from modules.usuario.domain.entities import User
 
 class UserCreateSerializer(serializers.Serializer):
-    name = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    email = serializers.CharField(required=False, allow_blank=True)
-    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    name = serializers.CharField(
+        required=True, 
+        allow_blank=False, 
+        max_length=255,
+        error_messages={
+            "required": "O campo nome é obrigatório.",
+            "blank": "O campo nome é obrigatório."
+        }
+    )
+    email = serializers.EmailField(
+        required=True, 
+        allow_blank=False,
+        error_messages={
+            "required": "O campo email é obrigatório.",
+            "blank": "O campo email é obrigatório.",
+            "invalid": "Email inválido."
+        }
+    )
+    password = serializers.CharField(
+        required=True, 
+        allow_blank=False, 
+        write_only=True,
+        error_messages={
+            "required": "O campo senha é obrigatório.",
+            "blank": "O campo senha é obrigatório."
+        }
+    )
+    
+    def validate_email(self, value):
+        """Valida o formato do email usando a validação da entidade User"""
+        try:
+            return User.validate_email(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+    
+    def validate_password(self, value):
+        """Valida a senha usando a validação da entidade User"""
+        try:
+            return User.validate_password(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
 
     def create(self, validated_data):
         user_service: UserService = self.context["user_service"]
@@ -22,8 +61,31 @@ class UserCreateSerializer(serializers.Serializer):
             })
             
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(
+        required=True, 
+        allow_blank=False,
+        error_messages={
+            "required": "O campo email é obrigatório.",
+            "blank": "O campo email é obrigatório.",
+            "invalid": "Email inválido."
+        }
+    )
+    password = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        write_only=True,
+        error_messages={
+            "required": "O campo senha é obrigatório.",
+            "blank": "O campo senha é obrigatório."
+        }
+    )
+    
+    def validate_email(self, value):
+        """Valida o formato do email usando a validação da entidade User"""
+        try:
+            return User.validate_email(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
 
     def validate(self, data):
         user_service: UserService = self.context["user_service"]

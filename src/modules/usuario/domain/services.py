@@ -7,6 +7,7 @@ from modules.usuario.domain.repositories.blacklist_repository import IBlacklistR
 import os 
 import redis 
 from dotenv import load_dotenv 
+from django.db import transaction
 
 load_dotenv() 
 
@@ -30,7 +31,9 @@ class UserService:
         
         user = User(id=None, name=name, email=email, password=password)
         
-        saved_user = self.user_repo.save(user)
+        # Usa transação atômica para garantir consistência na criação do usuário
+        with transaction.atomic():
+            saved_user = self.user_repo.save(user)
         
         access_token = Jwt_Utils.create_access_token(saved_user.id, saved_user.email)
         refresh_token = Jwt_Utils.create_refresh_token(saved_user.id, saved_user.email)

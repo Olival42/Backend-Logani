@@ -1,12 +1,8 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 
 from modules.pedido.application.web.serializers import (
     CreateOrderSerializer,
-    OrderResponseSerializer,
     OrderDetailSerializer,
-    UpdateOrderStatusSerializer
 )
 from modules.pedido.domain.services.order_service import OrderService
 from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
@@ -14,6 +10,7 @@ from modules.cliente.adapters.persistence.client_repository_django import Client
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
 
 
 class OrderCreateView(APIView):
@@ -25,10 +22,7 @@ class OrderCreateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -36,18 +30,12 @@ class OrderCreateView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
         
         # Validação dos dados
         serializer = CreateOrderSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
         
         # Busca o cliente do usuário logado
         # Extrai o user_id do token
@@ -59,14 +47,11 @@ class OrderCreateView(APIView):
             client = client_repository.get_by_user_id(str(user_id))
             
             if not client:
-                return Response(
-                    {"error": "Cliente não encontrado para o usuário"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return ErrorResponse.not_found("Cliente não encontrado para o usuário")
         except Exception as e:
-            return Response(
-                {"error": f"Erro ao buscar cliente: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro ao buscar cliente", 
+                details=str(e)
             )
         
         # Criação do pedido
@@ -78,23 +63,17 @@ class OrderCreateView(APIView):
                 notes=serializer.validated_data.get('notes')
             )
             
-            return Response(
-                {
-                    "message": "Pedido criado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_201_CREATED
+            return SuccessResponse.created(
+                data=result,
+                message="Pedido criado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -107,10 +86,7 @@ class OrderDetailView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -118,10 +94,7 @@ class OrderDetailView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
         
         # Busca o pedido
         order_service = OrderService(OrderRepository())
@@ -129,10 +102,7 @@ class OrderDetailView(APIView):
             order = order_service.get_order(order_id)
             
             if not order:
-                return Response(
-                    {"error": "Pedido não encontrado"}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return ErrorResponse.not_found("Pedido não encontrado")
             
             # Prepara dados do cliente (apenas id e name)
             client_data = {
@@ -166,18 +136,15 @@ class OrderDetailView(APIView):
                 'confirmed_at': order.confirmed_at
             })
             
-            return Response(
-                {
-                    "message": "Pedido encontrado",
-                    "data": serializer.data
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=serializer.data,
+                message="Pedido encontrado"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -190,10 +157,7 @@ class OrderConfirmView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -201,33 +165,24 @@ class OrderConfirmView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
         
         # Confirma o pedido
         order_service = OrderService(OrderRepository())
         try:
             result = order_service.confirm_order(order_id)
             
-            return Response(
-                {
-                    "message": "Pedido confirmado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Pedido confirmado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -240,10 +195,7 @@ class OrderCancelView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -251,33 +203,24 @@ class OrderCancelView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
         
         # Cancela o pedido
         order_service = OrderService(OrderRepository())
         try:
             result = order_service.cancel_order(order_id)
             
-            return Response(
-                {
-                    "message": "Pedido cancelado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Pedido cancelado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -290,10 +233,7 @@ class OrderListByClientView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -301,10 +241,7 @@ class OrderListByClientView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
         
         # Busca cliente
         try:
@@ -316,14 +253,11 @@ class OrderListByClientView(APIView):
             client = client_repository.get_by_user_id(str(user_id))
             
             if not client:
-                return Response(
-                    {"error": "Cliente não encontrado"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return ErrorResponse.not_found("Cliente não encontrado")
         except Exception as e:
-            return Response(
-                {"error": f"Erro ao buscar cliente: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro ao buscar cliente", 
+                details=str(e)
             )
         
         # Lista pedidos
@@ -343,18 +277,17 @@ class OrderListByClientView(APIView):
                     'created_at': order.created_at.isoformat() if order.created_at else None,
                 })
             
-            return Response(
-                {
-                    "message": f"Encontrados {len(orders)} pedidos",
-                    "data": data,
+            return SuccessResponse.ok(
+                data={
+                    "orders": data,
                     "count": len(orders)
                 },
-                status=status.HTTP_200_OK
+                message=f"Encontrados {len(orders)} pedidos"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 

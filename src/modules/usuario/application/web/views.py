@@ -1,4 +1,5 @@
 from rest_framework.views import APIView
+from django.db import DatabaseError, IntegrityError
 
 from modules.usuario.application.web.serializers import (
     UserCreateSerializer,
@@ -20,11 +21,24 @@ class RegisterView(APIView):
             context={"user_service": user_service}
         )
         if serializer.is_valid():
-            user_data = serializer.save()
-            return SuccessResponse.created(
-                data=user_data,
-                message="Usuário criado com sucesso"
-            )
+            try:
+                user_data = serializer.save()
+                return SuccessResponse.created(
+                    data=user_data,
+                    message="Usuário criado com sucesso"
+                )
+            except (DatabaseError, IntegrityError) as e:
+                # Erro de banco de dados não capturado pelo serializer
+                return ErrorResponse.internal_server_error(
+                    "Erro ao salvar usuário no banco de dados",
+                    details=str(e)
+                )
+            except Exception as e:
+                # Qualquer outro erro inesperado
+                return ErrorResponse.internal_server_error(
+                    "Erro inesperado ao criar usuário",
+                    details=str(e)
+                )
         
         return ErrorResponse.validation_error(serializer.errors)
 

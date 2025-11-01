@@ -1,4 +1,5 @@
 from rest_framework.views import APIView
+from django.db import DatabaseError, IntegrityError
 
 from modules.pedido.application.web.serializers import (
     CreateOrderSerializer,
@@ -70,6 +71,12 @@ class OrderCreateView(APIView):
             
         except ValueError as e:
             return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            # Erro específico de banco de dados (constraints, transações, etc)
+            return ErrorResponse.internal_server_error(
+                "Erro ao salvar pedido no banco de dados", 
+                details=str(e)
+            )
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 

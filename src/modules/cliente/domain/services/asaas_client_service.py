@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+from django.db import transaction
 from modules.cliente.domain.entities.client_entity import Client as ClientEntity
 from modules.cliente.domain.entities.address_entity import Address as AddressEntity
 from .client_service import ClientService
@@ -51,8 +52,27 @@ class AsaasClientService:
             # Garante que o ID usado no local seja o mesmo enviado ao Asaas como externalReference
             data['id'] = temp_client.id
             
-            # Agora cria no servidor local
-            client_entity = self.client_service.create_client(data, user_id)
+            # Guarda o ID do Asaas para possível rollback
+            asaas_id_for_rollback = asaas_id
+            
+            # Agora cria no servidor local com transação atômica
+            # Se falhar, tenta fazer rollback no Asaas
+            try:
+                with transaction.atomic():
+                    client_entity = self.client_service.create_client(data, user_id)
+            except Exception as db_error:
+                # Se falhar ao salvar no banco, tenta deletar o cliente do Asaas
+                if asaas_id_for_rollback:
+                    try:
+                        print(f"⚠️ Erro ao salvar cliente no banco: {db_error}. Tentando deletar cliente no Asaas: {asaas_id_for_rollback}")
+                        self.asaas_client.delete_customer(asaas_id_for_rollback)
+                        print(f"✅ Cliente {asaas_id_for_rollback} deletado no Asaas com sucesso")
+                    except Exception as rollback_error:
+                        print(f"❌ Erro ao deletar cliente no Asaas: {rollback_error}")
+                        # TODO: Implementar processo de limpeza assíncrona similar ao checkout
+                
+                # Propaga o erro original do banco
+                raise ValueError(f"Erro ao salvar cliente no banco de dados: {str(db_error)}")
             
             return {
                 'local_id': str(client_entity.id),
@@ -62,14 +82,10 @@ class AsaasClientService:
                 'asaas_response': asaas_response
             }
             
+        except ValueError:
+            # Re-lança ValueError sem modificar
+            raise
         except Exception as e:
-            # Se houve erro no servidor local, remove o cliente do Asaas
-            if asaas_id:
-                try:
-                    self.asaas_client.delete_customer(asaas_id)
-                except:
-                    pass  # Log do erro mas não falha a operação principal
-            
             raise ValueError(f"Erro ao criar cliente: {str(e)}")
     
     def _create_temp_client_entity(self, data: dict, user_id: int) -> ClientEntity:
@@ -157,8 +173,29 @@ class AsaasClientService:
                 # Adiciona o ID do Asaas aos dados para manter consistência
                 data['asaas_id'] = original_client.asaas_id
                 
-                # Agora atualiza no servidor local
-                updated_client = self.client_service.update_client(client_id, data)
+                # Guarda dados originais para possível rollback
+                original_asaas_id = original_client.asaas_id
+                
+                # Agora atualiza no servidor local com transação atômica
+                # Se falhar, tenta reverter no Asaas
+                try:
+                    with transaction.atomic():
+                        updated_client = self.client_service.update_client(client_id, data)
+                except Exception as db_error:
+                    # Se falhar ao atualizar no banco, tenta reverter no Asaas
+                    if asaas_response and original_client and original_asaas_id:
+                        try:
+                            print(f"⚠️ Erro ao atualizar cliente no banco: {db_error}. Tentando reverter no Asaas: {original_asaas_id}")
+                            self.asaas_client.update_customer(
+                                original_asaas_id, 
+                                original_client
+                            )
+                            print(f"✅ Alterações revertidas no Asaas com sucesso")
+                        except Exception as rollback_error:
+                            print(f"❌ Erro ao reverter alterações no Asaas: {rollback_error}")
+                    
+                    # Propaga o erro original do banco
+                    raise ValueError(f"Erro ao atualizar cliente no banco de dados: {str(db_error)}")
                 
                 return {
                     'local_id': str(updated_client.id),
@@ -168,8 +205,9 @@ class AsaasClientService:
                     'asaas_response': asaas_response
                 }
             else:
-                # Se não tem ID do Asaas, atualiza apenas localmente
-                updated_client = self.client_service.update_client(client_id, data)
+                # Se não tem ID do Asaas, atualiza apenas localmente com transação atômica
+                with transaction.atomic():
+                    updated_client = self.client_service.update_client(client_id, data)
                 
                 return {
                     'local_id': str(updated_client.id),
@@ -179,18 +217,23 @@ class AsaasClientService:
                     'message': 'Cliente atualizado localmente (não sincronizado com Asaas)'
                 }
                 
+        except ValueError:
+            # Re-lança ValueError sem modificar
+            raise
         except Exception as e:
             # Se houve erro no servidor local e já atualizou no Asaas,
             # tenta reverter a atualização no Asaas
             if asaas_response and original_client and original_client.asaas_id:
                 try:
                     # Reverte para os dados originais no Asaas
+                    print(f"⚠️ Erro na atualização. Tentando reverter no Asaas: {original_client.asaas_id}")
                     self.asaas_client.update_customer(
                         original_client.asaas_id, 
                         original_client
                     )
-                except:
-                    pass  # Log do erro mas não falha a operação principal
+                    print(f"✅ Alterações revertidas no Asaas")
+                except Exception as rollback_error:
+                    print(f"❌ Erro ao reverter no Asaas: {rollback_error}")
             
             raise ValueError(f"Erro ao atualizar cliente: {str(e)}")
     
@@ -263,8 +306,29 @@ class AsaasClientService:
             else:
                 # Se não tem ID do Asaas, cria
                 asaas_response = self.asaas_client.create_customer(client_entity)
-                client_entity.asaas_id = asaas_response.get('id')
-                self.client_repository.save(client_entity)
+                asaas_id = asaas_response.get('id')
+                
+                # Guarda o ID do Asaas para possível rollback
+                asaas_id_for_rollback = asaas_id
+                
+                # Atualiza e salva localmente com transação atômica
+                # Se falhar, tenta deletar no Asaas
+                try:
+                    with transaction.atomic():
+                        client_entity.asaas_id = asaas_id
+                        self.client_repository.save(client_entity)
+                except Exception as db_error:
+                    # Se falhar ao salvar, tenta deletar o cliente do Asaas
+                    if asaas_id_for_rollback:
+                        try:
+                            print(f"⚠️ Erro ao salvar cliente após criação no Asaas: {db_error}. Tentando deletar: {asaas_id_for_rollback}")
+                            self.asaas_client.delete_customer(asaas_id_for_rollback)
+                            print(f"✅ Cliente {asaas_id_for_rollback} deletado no Asaas com sucesso")
+                        except Exception as rollback_error:
+                            print(f"❌ Erro ao deletar cliente no Asaas: {rollback_error}")
+                    
+                    raise ValueError(f"Erro ao salvar cliente após criação no Asaas: {str(db_error)}")
+                
                 action = 'created'
             
             return {

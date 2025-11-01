@@ -1,12 +1,7 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.utils import timezone
 
 from modules.checkout.application.web.serializers import (
     CreateCheckoutSerializer,
-    UpdateCheckoutSerializer,
-    CheckoutResponseSerializer,
     CheckoutListSerializer,
     CheckoutDetailSerializer
 )
@@ -15,6 +10,7 @@ from modules.checkout.adapters.persistence.checkout_repository_django import Che
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
 
 
 class CheckoutCreateView(APIView):
@@ -52,10 +48,7 @@ class CheckoutCreateView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -63,41 +56,29 @@ class CheckoutCreateView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Validação dos dados
         serializer = CreateCheckoutSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                serializer.errors, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.validation_error(serializer.errors)
 
         # Criação do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
             result = checkout_service.create_checkout(**serializer.validated_data)
             
-            return Response(
-                {
-                    "message": "Checkout criado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_201_CREATED
+            return SuccessResponse.created(
+                data=result,
+                message="Checkout criado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -116,10 +97,7 @@ class CheckoutDetailView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -127,10 +105,7 @@ class CheckoutDetailView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Busca o checkout
         checkout_service = CheckoutService(CheckoutRepository())
@@ -138,10 +113,7 @@ class CheckoutDetailView(APIView):
             checkout = checkout_service.get_checkout(checkout_id)
             
             if not checkout:
-                return Response(
-                    {"error": "Checkout não encontrado"}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return ErrorResponse.not_found("Checkout não encontrado")
             
             # Serializa os dados
             serializer = CheckoutDetailSerializer({
@@ -168,18 +140,15 @@ class CheckoutDetailView(APIView):
                 }
             })
             
-            return Response(
-                {
-                    "message": "Checkout encontrado",
-                    "data": serializer.data
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=serializer.data,
+                message="Checkout encontrado"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -198,10 +167,7 @@ class CheckoutCancelView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -209,33 +175,24 @@ class CheckoutCancelView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Cancelamento do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
             result = checkout_service.cancel_checkout(checkout_id)
             
-            return Response(
-                {
-                    "message": "Checkout cancelado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Checkout cancelado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -254,10 +211,7 @@ class CheckoutSyncView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -265,33 +219,24 @@ class CheckoutSyncView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Sincronização do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
             result = checkout_service.sync_checkout_status(checkout_id)
             
-            return Response(
-                {
-                    "message": "Status do checkout sincronizado com sucesso",
-                    "data": result
-                },
-                status=status.HTTP_200_OK
+            return SuccessResponse.ok(
+                data=result,
+                message="Status do checkout sincronizado com sucesso"
             )
             
         except ValueError as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return ErrorResponse.bad_request(str(e))
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )
 
 
@@ -313,10 +258,7 @@ class CheckoutListView(APIView):
         # Autenticação
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"detail": "Token não informado"}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized("Token não informado")
 
         token = auth_header.split(" ")[1]
         user_service = UserService(UserRepository(), BlacklistRepository())
@@ -324,10 +266,7 @@ class CheckoutListView(APIView):
         try:
             user_service.authenticate(token)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)}, 
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return ErrorResponse.unauthorized(str(e))
 
         # Parâmetros de filtro
         client_id = request.query_params.get('client_id')
@@ -361,17 +300,16 @@ class CheckoutListView(APIView):
                 for checkout in checkouts
             ], many=True)
             
-            return Response(
-                {
-                    "message": f"Encontrados {len(checkouts)} checkouts",
-                    "data": serializer.data,
+            return SuccessResponse.ok(
+                data={
+                    "checkouts": serializer.data,
                     "count": len(checkouts)
                 },
-                status=status.HTTP_200_OK
+                message=f"Encontrados {len(checkouts)} checkouts"
             )
             
         except Exception as e:
-            return Response(
-                {"error": f"Erro interno do servidor: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
             )

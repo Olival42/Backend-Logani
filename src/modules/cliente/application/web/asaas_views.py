@@ -8,6 +8,8 @@ from modules.cliente.application.web.asaas_serializers import (
     AsaasSyncSerializer,
 )
 from modules.cliente.domain.services.asaas_client_service import AsaasClientService
+from modules.cliente.domain.services.client_service import ClientService
+from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
@@ -291,6 +293,91 @@ class AsaasClientDetailView(APIView):
             return Response(
                 {"error": str(e)}, 
                 status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Erro interno do servidor: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ClientByBearerTokenView(APIView):
+    """
+    View para buscar informações do cliente e usuário associados através do Bearer Token
+    """
+    
+    def get(self, request):
+        """
+        Retorna informações do usuário e cliente associados ao token Bearer
+        
+        Headers:
+            Authorization: Bearer <token>
+            
+        Returns:
+            Dicionário contendo informações do usuário e cliente:
+            {
+                "user": {
+                    "id": int,
+                    "name": str,
+                    "email": str,
+                    "active": bool,
+                    "registration_date": str (ISO format)
+                },
+                "client": {
+                    "id": str (UUID),
+                    "name": str,
+                    "cpf": str,
+                    "phone": str,
+                    "mobile_phone": str,
+                    "registration_date": str (ISO format),
+                    "active": bool,
+                    "asaas_id": str,
+                    "address": {
+                        "address": str,
+                        "number": str,
+                        "postal_code": str,
+                        "city": str,
+                        "state": str,
+                        "complement": str,
+                        "province": str
+                    }
+                }
+            }
+        """
+        # Autenticação
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return Response(
+                {"detail": "Token não informado"}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        token = auth_header.split(" ")[1]
+        user_service = UserService(UserRepository(), BlacklistRepository())
+        
+        try:
+            payload = user_service.authenticate(token)
+            user_id = payload["user_id"]
+        except ValueError as e:
+            return Response(
+                {"detail": str(e)}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Busca o cliente pelo user_id
+        client_service = ClientService(ClientRepository())
+        try:
+            result = client_service.get_client_by_bearer_token(user_id)
+            
+            return Response(
+                result,
+                status=status.HTTP_200_OK
+            )
+            
+        except ValueError as e:
+            return Response(
+                {"error": str(e)}, 
+                status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
             return Response(

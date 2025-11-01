@@ -1,4 +1,5 @@
 from rest_framework.views import APIView
+from django.db import DatabaseError, IntegrityError
 
 from modules.cliente.application.web.asaas_serializers import (
     AsaasCreateClientSerializer,
@@ -77,6 +78,12 @@ class AsaasClientCreateView(APIView):
             
         except ValueError as e:
             return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            # Erro específico de banco de dados (constraints, transações, etc)
+            return ErrorResponse.internal_server_error(
+                "Erro ao salvar cliente no banco de dados", 
+                details=str(e)
+            )
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 
@@ -147,6 +154,12 @@ class AsaasClientUpdateView(APIView):
             
         except ValueError as e:
             return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            # Erro específico de banco de dados (constraints, transações, etc)
+            return ErrorResponse.internal_server_error(
+                "Erro ao atualizar cliente no banco de dados", 
+                details=str(e)
+            )
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 
@@ -188,6 +201,12 @@ class AsaasClientSyncView(APIView):
             
         except ValueError as e:
             return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            # Erro específico de banco de dados
+            return ErrorResponse.internal_server_error(
+                "Erro ao sincronizar cliente no banco de dados", 
+                details=str(e)
+            )
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 

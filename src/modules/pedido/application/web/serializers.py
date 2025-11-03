@@ -2,22 +2,14 @@ from rest_framework import serializers
 from decimal import Decimal
 
 
-class OrderItemSerializer(serializers.Serializer):
-    """Serializer para item do pedido"""
+class OrderItemRequestSerializer(serializers.Serializer):
+    """Serializer para receber item do pedido (ID e quantidade)"""
     
     product_id = serializers.CharField(
         required=True,
         help_text="ID do produto",
         error_messages={
             "required": "O campo product_id é obrigatório."
-        }
-    )
-    
-    product_name = serializers.CharField(
-        required=True,
-        help_text="Nome do produto",
-        error_messages={
-            "required": "O campo product_name é obrigatório."
         }
     )
     
@@ -30,23 +22,22 @@ class OrderItemSerializer(serializers.Serializer):
             "min_value": "A quantidade deve ser maior que zero."
         }
     )
+
+
+class OrderItemResponseSerializer(serializers.Serializer):
+    """Serializer para responder item do pedido (com todos os dados)"""
     
-    unit_price = serializers.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        required=True,
-        help_text="Preço unitário",
-        error_messages={
-            "required": "O campo unit_price é obrigatório.",
-            "invalid": "Preço inválido."
-        }
-    )
+    product_id = serializers.CharField(help_text="ID do produto")
+    product_name = serializers.CharField(help_text="Nome do produto")
+    quantity = serializers.IntegerField(help_text="Quantidade")
+    unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, help_text="Preço unitário")
+    total_price = serializers.DecimalField(max_digits=10, decimal_places=2, help_text="Preço total")
 
 
 class CreateOrderSerializer(serializers.Serializer):
     """Serializer para criação de pedido"""
     
-    items = OrderItemSerializer(many=True, required=True)
+    items = OrderItemRequestSerializer(many=True, required=True)
     
     notes = serializers.CharField(
         required=False,
@@ -87,7 +78,7 @@ class OrderResponseSerializer(serializers.Serializer):
     order_id = serializers.UUIDField()
     external_reference = serializers.CharField()
     client = ClientSimpleSerializer()
-    items = OrderItemSerializer(many=True)
+    items = OrderItemResponseSerializer(many=True)
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
     total = serializers.DecimalField(max_digits=10, decimal_places=2)
     total_items = serializers.IntegerField()
@@ -106,7 +97,7 @@ class OrderDetailSerializer(serializers.Serializer):
     
     client = ClientSimpleSerializer()
     
-    items = OrderItemSerializer(many=True)
+    items = OrderItemResponseSerializer(many=True)
     
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
     total = serializers.DecimalField(max_digits=10, decimal_places=2)

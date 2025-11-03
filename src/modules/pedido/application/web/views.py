@@ -11,7 +11,7 @@ from modules.cliente.adapters.persistence.client_repository_django import Client
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
-from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse, produto_repository
 
 
 class OrderCreateView(APIView):
@@ -55,12 +55,35 @@ class OrderCreateView(APIView):
                 details=str(e)
             )
         
+        # Busca dados dos produtos pelos IDs
+        items_with_product_data = []
+        
+        for item in serializer.validated_data['items']:
+            product_id = item['product_id']
+            quantity = item['quantity']
+            
+            # Busca o produto
+            product = produto_repository.get_by_id(product_id)
+            
+            if not product:
+                return ErrorResponse.bad_request(
+                    f"Produto com ID '{product_id}' não encontrado"
+                )
+            
+            # Monta o item com todos os dados do produto
+            items_with_product_data.append({
+                'product_id': product.id,
+                'product_name': product.nome,
+                'quantity': quantity,
+                'unit_price': float(product.preco)
+            })
+        
         # Criação do pedido
         order_service = OrderService(OrderRepository())
         try:
             result = order_service.create_order(
                 client=client,
-                items=serializer.validated_data['items'],
+                items=items_with_product_data,
                 notes=serializer.validated_data.get('notes')
             )
             

@@ -4,7 +4,8 @@ from .views import (
     OrderDetailView,
     OrderConfirmView,
     OrderCancelView,
-    OrderListByClientView
+    OrderListByClientView,
+    OrderUpdateView
 )
 
 urlpatterns = [
@@ -13,6 +14,9 @@ urlpatterns = [
     
     # Detalhes de pedido
     path('detail/<str:order_id>/', OrderDetailView.as_view(), name='order-detail'),
+    
+    # Atualizar pedido
+    path('update/<str:order_id>/', OrderUpdateView.as_view(), name='order-update'),
     
     # Confirmar pedido
     path('confirm/<str:order_id>/', OrderConfirmView.as_view(), name='order-confirm'),

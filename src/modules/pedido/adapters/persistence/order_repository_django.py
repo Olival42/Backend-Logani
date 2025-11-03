@@ -78,15 +78,36 @@ class OrderRepository(IOrderRepository):
         return [self._model_to_entity(model) for model in order_models]
     
     def update(self, order: OrderEntity) -> OrderEntity:
-        """Atualiza um pedido"""
+        """Atualiza um pedido (incluindo itens)"""
         order_model = OrderModel.objects.get(id=order.id)
         
+        # Limpa itens antigos
+        order_model.items.clear()
+        
+        # Adiciona novos itens
+        for item in order.items:
+            item_model = OrderItemModel.objects.create(
+                id=uuid.uuid4(),
+                product_id=item.product_id,
+                product_name=item.product_name,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                total_price=item.total_price
+            )
+            order_model.items.add(item_model)
+        
+        # Atualiza outros campos
         order_model.status = order.status
         order_model.confirmed_at = order.confirmed_at
         order_model.notes = order.notes
+        order_model.subtotal = order.subtotal
+        order_model.total = order.total
         
         order_model.save()
-        return order
+        
+        # Busca o pedido atualizado com itens relacionados
+        updated_order_model = OrderModel.objects.prefetch_related('items').get(id=order_model.id)
+        return self._model_to_entity(updated_order_model)
     
     def list_all(self) -> List[OrderEntity]:
         """Lista todos os pedidos"""

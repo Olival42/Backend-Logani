@@ -1,5 +1,5 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 from django.conf import settings
@@ -316,6 +316,148 @@ class OrderService:
             'order_id': str(updated_order.id),
             'external_reference': updated_order.external_reference,
             'status': updated_order.status
+        }
+    
+    def update_order_items(
+        self,
+        order_id: str,
+        items_actions: List[Dict[str, Any]],
+        produto_repository
+    ) -> Dict[str, Any]:
+        """
+        Atualiza itens de um pedido (adicionar, remover, atualizar quantidade)
+        Apenas para pedidos PENDING
+        
+        Args:
+            order_id: ID do pedido
+            items_actions: Lista de ações [{action: 'add'|'update'|'remove', product_id, quantity?}]
+            produto_repository: Repositório de produtos para buscar informações
+            
+        Returns:
+            Dict com informações do pedido atualizado
+        """
+        order = self.order_repository.get_by_id(order_id)
+        if not order:
+            raise ValueError("Pedido não encontrado")
+        
+        # Valida que o pedido está pendente
+        if order.status != 'PENDING':
+            raise ValueError(f"Pedido não pode ser atualizado. Status atual: {order.status}. Apenas pedidos PENDING podem ser atualizados.")
+        
+        # Cria cópia da lista de itens atual para manipulação
+        updated_items = list(order.items)
+        
+        # Processa cada ação
+        for action_data in items_actions:
+            action = action_data['action']
+            product_id = action_data['product_id']
+            quantity = action_data.get('quantity')
+            
+            # Busca produto se for adicionar
+            if action in ['add', 'update']:
+                product = produto_repository.get_by_id(product_id)
+                if not product:
+                    raise ValueError(f"Produto com ID '{product_id}' não encontrado")
+            
+            if action == 'add':
+                # Verifica se o produto já existe no pedido
+                existing_item = None
+                for item in updated_items:
+                    if item.product_id == product_id:
+                        existing_item = item
+                        break
+                
+                if existing_item:
+                    # Se já existe, atualiza a quantidade
+                    new_quantity = existing_item.quantity + quantity
+                    existing_item.quantity = new_quantity
+                    existing_item.total_price = existing_item.unit_price * Decimal(str(new_quantity))
+                else:
+                    # Se não existe, adiciona novo item
+                    unit_price = Decimal(str(product.preco))
+                    total_price = unit_price * Decimal(str(quantity))
+                    new_item = OrderItem(
+                        product_id=product.id,
+                        product_name=product.nome,
+                        quantity=quantity,
+                        unit_price=unit_price,
+                        total_price=total_price
+                    )
+                    updated_items.append(new_item)
+            
+            elif action == 'update':
+                # Atualiza quantidade de um item existente
+                item_found = False
+                for item in updated_items:
+                    if item.product_id == product_id:
+                        item.quantity = quantity
+                        item.total_price = item.unit_price * Decimal(str(quantity))
+                        item_found = True
+                        break
+                
+                if not item_found:
+                    raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para atualização")
+            
+            elif action == 'remove':
+                # Remove item do pedido
+                item_to_remove = None
+                for item in updated_items:
+                    if item.product_id == product_id:
+                        item_to_remove = item
+                        break
+                
+                if not item_to_remove:
+                    raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para remoção")
+                
+                updated_items.remove(item_to_remove)
+        
+        # Valida que sobrou pelo menos um item
+        if not updated_items:
+            raise ValueError("Pedido deve ter pelo menos um item após a atualização")
+        
+        # Recalcula subtotal e total
+        subtotal = Decimal('0')
+        for item in updated_items:
+            subtotal += item.total_price
+        
+        # Atualiza o pedido com os novos itens
+        order.items = updated_items
+        order.subtotal = subtotal
+        order.total = subtotal
+        order.updated_at = datetime.now(timezone.utc)
+        
+        # Salva com transação atômica
+        with transaction.atomic():
+            updated_order = self.order_repository.update(order)
+        
+        # Prepara resposta
+        items_data = [
+            {
+                'product_id': item.product_id,
+                'product_name': item.product_name,
+                'quantity': item.quantity,
+                'unit_price': float(item.unit_price),
+                'total_price': float(item.total_price)
+            }
+            for item in updated_order.items
+        ]
+        
+        return {
+            'order_id': str(updated_order.id),
+            'external_reference': updated_order.external_reference,
+            'client': {
+                'id': str(updated_order.client.id),
+                'name': updated_order.client.name
+            },
+            'items': items_data,
+            'subtotal': float(updated_order.subtotal),
+            'total': float(updated_order.total),
+            'total_items': updated_order.total_items(),
+            'status': updated_order.status,
+            'notes': updated_order.notes,
+            'created_at': updated_order.created_at.isoformat() if updated_order.created_at else None,
+            'updated_at': updated_order.updated_at.isoformat() if updated_order.updated_at else None,
+            'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
         }
     
     def _serialize_order(self, order: Order) -> Dict[str, Any]:

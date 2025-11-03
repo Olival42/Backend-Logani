@@ -119,3 +119,55 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
         help_text="Observações sobre a mudança de status"
     )
 
+
+class UpdateOrderItemSerializer(serializers.Serializer):
+    """Serializer para atualizar/remover item do pedido"""
+    
+    action = serializers.ChoiceField(
+        choices=['add', 'update', 'remove'],
+        required=True,
+        help_text="Ação a ser executada: add (adicionar), update (atualizar quantidade), remove (remover)"
+    )
+    
+    product_id = serializers.CharField(
+        required=True,
+        help_text="ID do produto",
+        error_messages={
+            "required": "O campo product_id é obrigatório."
+        }
+    )
+    
+    quantity = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        help_text="Quantidade (obrigatória para add e update)"
+    )
+    
+    def validate(self, data):
+        """Valida se quantity é obrigatório para add e update"""
+        action = data.get('action')
+        quantity = data.get('quantity')
+        
+        if action in ['add', 'update'] and not quantity:
+            raise serializers.ValidationError(
+                {"quantity": "O campo quantity é obrigatório para ações 'add' e 'update'."}
+            )
+        
+        return data
+
+
+class UpdateOrderSerializer(serializers.Serializer):
+    """Serializer para atualização de pedido (itens)"""
+    
+    items = UpdateOrderItemSerializer(
+        many=True,
+        required=True,
+        help_text="Lista de ações a serem executadas nos itens do pedido"
+    )
+    
+    def validate_items(self, value):
+        """Valida se há pelo menos uma ação"""
+        if not value or len(value) == 0:
+            raise serializers.ValidationError("É necessário informar pelo menos uma ação.")
+        return value
+

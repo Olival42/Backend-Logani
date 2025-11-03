@@ -4,6 +4,7 @@ from django.db import DatabaseError, IntegrityError
 from modules.pedido.application.web.serializers import (
     CreateOrderSerializer,
     OrderDetailSerializer,
+    UpdateOrderSerializer,
 )
 from modules.pedido.domain.services.order_service import OrderService
 from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
@@ -357,6 +358,58 @@ class OrderListByClientView(APIView):
                 message=f"Encontrados {len(orders)} pedidos"
             )
             
+        except Exception as e:
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
+            )
+
+
+class OrderUpdateView(APIView):
+    """View para atualizar itens de um pedido"""
+    
+    def patch(self, request, order_id):
+        """Atualiza itens de um pedido"""
+        
+        # Autenticação
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return ErrorResponse.unauthorized("Token não informado")
+
+        token = auth_header.split(" ")[1]
+        user_service = UserService(UserRepository(), BlacklistRepository())
+        
+        try:
+            user_service.authenticate(token)
+        except ValueError as e:
+            return ErrorResponse.unauthorized(str(e))
+        
+        # Validação dos dados
+        serializer = UpdateOrderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return ErrorResponse.validation_error(serializer.errors)
+        
+        # Atualização do pedido
+        order_service = OrderService(OrderRepository())
+        try:
+            result = order_service.update_order_items(
+                order_id=order_id,
+                items_actions=serializer.validated_data['items'],
+                produto_repository=produto_repository
+            )
+            
+            return SuccessResponse.ok(
+                data=result,
+                message="Pedido atualizado com sucesso"
+            )
+            
+        except ValueError as e:
+            return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            return ErrorResponse.internal_server_error(
+                "Erro ao atualizar pedido no banco de dados", 
+                details=str(e)
+            )
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 

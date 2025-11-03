@@ -4,6 +4,7 @@ from modules.webhook.domain.services.webhook_notification_service import Webhook
 from modules.webhook.adapters.persistence.webhook_notification_repository_django import WebhookNotificationRepository
 from modules.pagamento.adapters.persistence.payment_repository_django import PaymentRepository
 from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
+from modules.checkout.adapters.persistence.checkout_repository_django import CheckoutRepository
 from api_pagamento_frete.utils import SuccessResponse
 
 
@@ -39,11 +40,13 @@ class AsaasWebhookReceiverView(APIView):
             notification_repository = WebhookNotificationRepository()
             payment_repository = PaymentRepository()
             order_repository = OrderRepository()
+            checkout_repository = CheckoutRepository()
             
             notification_service = WebhookNotificationService(
                 notification_repository, 
                 payment_repository,
-                order_repository
+                order_repository,
+                checkout_repository
             )
             
             # Salva a notificação recebida

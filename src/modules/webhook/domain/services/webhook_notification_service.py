@@ -10,6 +10,7 @@ from modules.pagamento.domain.repositories.payment_repository import IPaymentRep
 from modules.pagamento.domain.entities.payment_entity import Payment
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
 from modules.pedido.domain.entities.order_entity import Order
+from modules.checkout.domain.repositories.checkout_repository import ICheckoutRepository
 
 
 class WebhookNotificationService:
@@ -21,11 +22,13 @@ class WebhookNotificationService:
         self, 
         notification_repository: WebhookNotificationRepository, 
         payment_repository: IPaymentRepository,
-        order_repository: IOrderRepository
+        order_repository: IOrderRepository,
+        checkout_repository: Optional[ICheckoutRepository] = None
     ):
         self.notification_repository = notification_repository
         self.payment_repository = payment_repository
         self.order_repository = order_repository
+        self.checkout_repository = checkout_repository
     
     def receive_and_save_notification(self, data: Dict[str, Any]) -> WebhookNotification:
         """
@@ -98,6 +101,8 @@ class WebhookNotificationService:
                 result = self._process_payment_overdue(notification)
             elif notification.event == 'PAYMENT_CREATED':
                 result = self._process_payment_created(notification)
+            elif notification.event == 'CHECKOUT_CANCELED':
+                result = self._process_checkout_canceled(notification)
             else:
                 # Eventos que não exigem ação (visualização, etc)
                 result = {
@@ -694,6 +699,81 @@ class WebhookNotificationService:
                 if order:
                     # Mantém o pedido como PENDING mas poderia mudar para um status específico
                     result['order_status'] = order.status
+        
+        return result
+    
+    def _process_checkout_canceled(self, notification: WebhookNotification) -> Dict[str, Any]:
+        """Processa checkout cancelado - volta pedido para PENDING"""
+        
+        result = {
+            'success': False,
+            'message': 'Nenhum checkout ou pedido encontrado'
+        }
+        
+        # Verifica se temos checkout_repository
+        if not self.checkout_repository:
+            return {
+                'success': False,
+                'message': 'Checkout repository não configurado'
+            }
+        
+        # Busca checkout pelo ID (do campo checkout no webhook)
+        checkout = None
+        checkout_data = notification.data.get('checkout', {})
+        checkout_id = checkout_data.get('id') if checkout_data else None
+        
+        if checkout_id:
+            checkout = self.checkout_repository.get_by_asaas_id(checkout_id)
+        
+        if not checkout:
+            # Tenta buscar pelo checkout_session do payment
+            if notification.checkout_session:
+                checkout = self.checkout_repository.get_by_asaas_id(notification.checkout_session)
+        
+        if not checkout:
+            return result
+        
+        # Atualiza checkout para cancelado
+        checkout.cancel()
+        self.checkout_repository.save(checkout)
+        
+        # Busca pedido associado ao checkout através do external_reference
+        if checkout.external_reference:
+            order = self.order_repository.get_by_external_reference(checkout.external_reference)
+            
+            if order:
+                # IMPORTANTE: Volta pedido para PENDING para permitir edições
+                order.status = 'PENDING'
+                # Remove confirmed_at para limpar histórico
+                order.confirmed_at = None
+                # Atualiza updated_at para registrar a mudança
+                order.updated_at = datetime.now(timezone.utc)
+                
+                self.order_repository.update(order)
+                
+                result = {
+                    'success': True,
+                    'message': 'Checkout cancelado e pedido voltou para PENDING',
+                    'checkout_id': checkout.id,
+                    'checkout_status': checkout.status,
+                    'order_id': order.id,
+                    'order_status': order.status,
+                    'order_external_reference': order.external_reference
+                }
+            else:
+                result = {
+                    'success': True,
+                    'message': 'Checkout cancelado mas pedido não encontrado',
+                    'checkout_id': checkout.id,
+                    'checkout_status': checkout.status
+                }
+        else:
+            result = {
+                'success': True,
+                'message': 'Checkout cancelado mas sem external_reference',
+                'checkout_id': checkout.id,
+                'checkout_status': checkout.status
+            }
         
         return result
     

@@ -49,8 +49,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # CORS middleware deve vir antes do CommonMiddleware
+    'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -170,9 +170,13 @@ CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutos
 CELERY_TASK_SOFT_TIME_LIMIT = 20 * 60  # 20 minutos
 
 # CORS Configuration
-CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173').split(',')
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = os.getenv('DEBUG', 'True') == 'True'  # Permite todos os origins em desenvolvimento
+
+# Permite todos os origins em desenvolvimento, origem específica em produção
+if os.getenv('DEBUG', 'True') == 'True':
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(',')
 CORS_ALLOW_METHODS = [
     'DELETE',
     'GET',
@@ -191,4 +195,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'access-control-request-method',
+    'access-control-request-headers',
+    'ngrok-skip-browser-warning',
 ]

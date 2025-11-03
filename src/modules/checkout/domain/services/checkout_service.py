@@ -185,15 +185,12 @@ class CheckoutService:
                             payment = self.payment_repository.save(payment)
                         except Exception as e:
                             # Se falhar ao criar payment, cancela toda a transação
-                            print(f"⚠️ Erro ao criar Payment: {str(e)}")
                             raise ValueError(f"Erro ao criar payment associado ao checkout: {str(e)}")
             except Exception as db_error:
                 # Se falhar ao salvar no banco, tenta cancelar o checkout no Asaas
                 if asaas_checkout_id_for_rollback:
                     try:
-                        print(f"⚠️ Erro ao salvar checkout no banco: {db_error}. Tentando cancelar checkout no Asaas: {asaas_checkout_id_for_rollback}")
                         self.asaas_client.cancel_checkout(asaas_checkout_id_for_rollback)
-                        print(f"✅ Checkout {asaas_checkout_id_for_rollback} cancelado no Asaas com sucesso")
                     except Exception as rollback_error:
                         # Se falhar o rollback, agenda limpeza assíncrona
                         print(f"❌ Erro ao cancelar checkout no Asaas: {rollback_error}")
@@ -201,7 +198,6 @@ class CheckoutService:
                             from modules.pagamento.tasks import cleanup_orphaned_checkouts_async
                             # Agenda limpeza assíncrona para tentar novamente depois
                             cleanup_orphaned_checkouts_async.delay([asaas_checkout_id_for_rollback])
-                            print(f"📋 Limpeza de checkout {asaas_checkout_id_for_rollback} agendada para execução assíncrona")
                         except Exception as task_error:
                             print(f"⚠️ Erro ao agendar task de limpeza: {task_error}")
                 
@@ -299,19 +295,79 @@ class CheckoutService:
             if not checkout.can_be_cancelled():
                 raise ValueError("Checkout não pode ser cancelado")
             
-            # Cancela no Asaas se tiver asaas_id
-            asaas_response = None
-            if checkout.asaas_id:
-                asaas_response = self.asaas_client.cancel_checkout(checkout.asaas_id)
+            # Guarda o ID do checkout no Asaas para possível rollback
+            asaas_checkout_id_for_rollback = checkout.asaas_id
             
-            # Cancela localmente
-            checkout.cancel()
-            self.checkout_repository.save(checkout)
+            # Cancela no Asaas primeiro (antes da transação local)
+            asaas_response = None
+            asaas_cancelled = False
+            if checkout.asaas_id:
+                try:
+                    asaas_response = self.asaas_client.cancel_checkout(checkout.asaas_id)
+                    # Verifica se foi cancelado com sucesso
+                    # O Asaas pode retornar o status na resposta ou precisamos consultar depois
+                    if asaas_response:
+                        # Tenta verificar o status na resposta
+                        asaas_status = asaas_response.get('status', '')
+                        if asaas_status == 'CANCELED' or asaas_response.get('deleted', False):
+                            asaas_cancelled = True
+                        else:
+                            # Consulta o checkout para confirmar o status
+                            try:
+                                checkout_info = self.asaas_client.get_checkout(checkout.asaas_id)
+                                asaas_status = checkout_info.get('status', '').upper()
+                                if asaas_status == 'CANCELED' or asaas_status == 'CANCELLED':
+                                    asaas_cancelled = True
+                            except Exception as check_error:
+                                print(f"⚠️ Não foi possível confirmar o cancelamento no Asaas: {check_error}")
+                    else:
+                        # Se não retornou dados, assume sucesso se não houve exceção
+                        asaas_cancelled = True
+                except Exception as asaas_error:
+                    # Se falhar ao cancelar no Asaas, continua com o cancelamento local
+                    print(f"⚠️ Erro ao cancelar checkout no Asaas: {asaas_error}")
+            
+            # Cancela localmente com transação atômica
+            try:
+                with transaction.atomic():
+                    checkout.cancel()
+                    self.checkout_repository.save(checkout)
+                    
+                    # Cancela o Payment associado ao checkout se existir
+                    if self.payment_repository and checkout.asaas_id:
+                        try:
+                            # Busca payment pelo asaas_checkout_id
+                            payment = self.payment_repository.get_by_asaas_checkout_id(checkout.asaas_id)
+                            if payment and payment.can_be_cancelled():
+                                payment.cancel()
+                                self.payment_repository.save(payment)
+                        except Exception as payment_error:
+                            # Se falhar ao cancelar payment, não interrompe o cancelamento do checkout
+                            print(f"⚠️ Erro ao cancelar payment associado: {payment_error}")
+                    
+                    # Cancela o Order associado ao checkout se existir (através do external_reference)
+                    if checkout.external_reference and self.order_repository:
+                        try:
+                            order = self.order_repository.get_by_external_reference(checkout.external_reference)
+                            if order and order.can_be_cancelled():
+                                order.cancel()
+                                self.order_repository.update(order)
+                        except Exception as order_error:
+                            # Se falhar ao cancelar order, não interrompe o cancelamento do checkout
+                            print(f"⚠️ Erro ao cancelar order associado: {order_error}")
+                    
+            except Exception as db_error:
+                # Se falhar ao salvar no banco, já tentamos cancelar no Asaas acima
+                # A transação atômica já faz rollback automático
+                if isinstance(db_error, ValueError):
+                    raise db_error
+                raise ValueError(f"Erro ao salvar checkout no banco de dados: {str(db_error)}")
             
             return {
                 'local_id': str(checkout.id),
                 'asaas_id': checkout.asaas_id,
                 'status': checkout.status,
+                'asaas_cancelled': asaas_cancelled,
                 'asaas_response': asaas_response
             }
             

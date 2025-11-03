@@ -61,7 +61,7 @@ class Checkout:
     
     def can_be_cancelled(self) -> bool:
         """Verifica se o checkout pode ser cancelado"""
-        return self.status in ['PENDING'] and not self.is_expired()
+        return self.status in ['PENDING', 'FAILED'] and not self.is_expired()
     
     def mark_as_paid(self):
         """Marca o checkout como pago"""
@@ -82,14 +82,17 @@ class Checkout:
             self.updated_at = datetime.now()
     
     def mark_as_failed(self):
-        """Marca o checkout como falhou"""
+        """Marca o checkout como falhou e cancela automaticamente"""
         if self.status in ['PENDING']:
             self.status = 'FAILED'
             self.updated_at = datetime.now()
+            # Cancela automaticamente quando falha
+            self.cancel()
     
     def cancel(self):
         """Cancela o checkout"""
-        if self.can_be_cancelled():
+        # Permite cancelar se estiver pendente ou falhou
+        if self.status in ['PENDING', 'FAILED'] and not self.is_expired():
             self.status = 'CANCELLED'
             self.updated_at = datetime.now()
     

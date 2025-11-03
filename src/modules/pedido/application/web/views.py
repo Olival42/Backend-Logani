@@ -290,27 +290,69 @@ class OrderListByClientView(APIView):
                 details=str(e)
             )
         
+        # Parâmetros de filtro opcionais
+        status_filter = request.query_params.get('status')  # Filtro opcional por status
+        exclude_cancelled = request.query_params.get('exclude_cancelled', 'false').lower() == 'true'  # Excluir cancelados
+        include_all_cancelled = request.query_params.get('include_all_cancelled', 'false').lower() == 'true'  # Incluir todos os cancelados (mesmo sem confirmação)
+        
         # Lista pedidos
         order_service = OrderService(OrderRepository())
         try:
             orders = order_service.get_client_orders(str(client.id))
             
+            # Por padrão, exclui pedidos cancelados que nunca foram confirmados/pagos
+            # (pedidos que foram cancelados porque o checkout falhou antes do pagamento)
+            if not include_all_cancelled:
+                orders = [
+                    order for order in orders 
+                    if order.status != 'CANCELLED' 
+                    or order.confirmed_at is not None  # Só mostra cancelados se foram confirmados antes
+                    or order.status == 'PAID'  # Se estava pago antes de cancelar
+                ]
+            
+            # Aplica filtros adicionais se fornecidos
+            if status_filter:
+                orders = [order for order in orders if order.status == status_filter.upper()]
+            
+            if exclude_cancelled:
+                orders = [order for order in orders if order.status != 'CANCELLED']
+            
             # Serializa os dados
             data = []
             for order in orders:
+                # Prepara itens do pedido
+                items_data = [
+                    {
+                        'product_id': item.product_id,
+                        'product_name': item.product_name,
+                        'quantity': item.quantity,
+                        'unit_price': float(item.unit_price),
+                        'total_price': float(item.total_price)
+                    }
+                    for item in order.items
+                ]
+                
                 data.append({
                     'order_id': order.id,
                     'external_reference': order.external_reference,
                     'total': float(order.total),
+                    'subtotal': float(order.subtotal),
                     'status': order.status,
                     'total_items': order.total_items(),
+                    'items': items_data,
                     'created_at': order.created_at.isoformat() if order.created_at else None,
+                    'updated_at': order.updated_at.isoformat() if order.updated_at else None,
+                    'confirmed_at': order.confirmed_at.isoformat() if order.confirmed_at else None,
                 })
             
             return SuccessResponse.ok(
                 data={
                     "orders": data,
-                    "count": len(orders)
+                    "count": len(orders),
+                    "filters_applied": {
+                        "status": status_filter,
+                        "exclude_cancelled": exclude_cancelled
+                    }
                 },
                 message=f"Encontrados {len(orders)} pedidos"
             )

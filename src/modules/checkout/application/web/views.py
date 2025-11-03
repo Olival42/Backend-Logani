@@ -10,7 +10,7 @@ from modules.checkout.adapters.persistence.checkout_repository_django import Che
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
-from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
+from api_pagamento_frete.utils import ErrorResponse, SuccessResponse, produto_repository
 
 
 class CheckoutCreateView(APIView):
@@ -22,27 +22,37 @@ class CheckoutCreateView(APIView):
         """
         Cria um novo checkout baseado na documentação ASAAS
         
-        Body (campos obrigatórios):
-        {
-            "value": 50.00,
-            "customer": "cus_123456789",
-            "chargeTypes": ["DETACHED"],
-            "minutesToExpire": 60
-        }
-        
-        Body (com campos opcionais):
+        Opção 1: Checkout manual (informar value e items):
         {
             "value": 50.00,
             "customer": "cus_123456789",
             "chargeTypes": ["DETACHED"],
             "minutesToExpire": 60,
-            "description": "Pagamento do frete da compra",
-            "externalReference": "REF123",
-            "successUrl": "https://meusite.com/success",
-            "failureUrl": "https://meusite.com/failure",
-            "expiresUrl": "https://meusite.com/expired",
-            "installments": 1,
-            "paymentMethods": ["PIX", "CREDIT_CARD"]
+            "items": [
+                {
+                    "name": "Produto A",
+                    "value": 25.00,
+                    "quantity": 2,
+                    "imageBase64": "base64..."
+                }
+            ]
+        }
+        
+        Opção 2: Checkout baseado em pedido existente (só informar externalReference):
+        {
+            "externalReference": "ORD_20251101203654_0A38230E",
+            "customer": "cus_123456789",
+            "chargeTypes": ["DETACHED", "INSTALLMENT"],
+            "minutesToExpire": 60,
+            "callback": {
+                "successUrl": "https://seusite.com/sucesso",
+                "cancelUrl": "https://seusite.com/falha",
+                "expiredUrl": "https://seusite.com/expirado"
+            },
+            "paymentMethods": ["PIX", "CREDIT_CARD"],
+            "installment": {
+                "maxInstallmentCount": 5
+            }
         }
         """
         # Autenticação
@@ -63,10 +73,55 @@ class CheckoutCreateView(APIView):
         if not serializer.is_valid():
             return ErrorResponse.validation_error(serializer.errors)
 
+        validated_data = serializer.validated_data.copy()
+        
+        # Se externalReference foi informado e não tem value/items, busca do pedido
+        if validated_data.get('externalReference') and not validated_data.get('value'):
+            from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
+            
+            order_repository = OrderRepository()
+            try:
+                order = order_repository.get_by_external_reference(validated_data['externalReference'])
+                
+                if not order:
+                    return ErrorResponse.bad_request(
+                        f"Pedido com external_reference '{validated_data['externalReference']}' não encontrado"
+                    )
+                
+                # Busca dados dos produtos e monta os itens
+                checkout_items = []
+                for item in order.items:
+                    product = produto_repository.get_by_id(item.product_id)
+                    if product:
+                        item_data = {
+                            'name': item.product_name,
+                            'value': float(item.unit_price),
+                            'quantity': item.quantity,
+                            'externalReference': item.product_id  # ID do produto como externalReference
+                        }
+                        # Adiciona imagem se disponível
+                        if product.imagem:
+                            item_data['imageBase64'] = product.imagem
+                        checkout_items.append(item_data)
+                
+                # Atualiza os dados validados com os valores do pedido
+                validated_data['value'] = float(order.total)
+                validated_data['items'] = checkout_items
+                
+                # Se não passou description, usa a do pedido
+                if not validated_data.get('description'):
+                    validated_data['description'] = f"Pagamento do pedido {validated_data['externalReference']}"
+                    
+            except Exception as e:
+                return ErrorResponse.internal_server_error(
+                    "Erro ao buscar dados do pedido",
+                    details=str(e)
+                )
+
         # Criação do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
-            result = checkout_service.create_checkout(**serializer.validated_data)
+            result = checkout_service.create_checkout(**validated_data)
             
             return SuccessResponse.created(
                 data=result,

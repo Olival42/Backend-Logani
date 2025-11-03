@@ -9,17 +9,6 @@ class CreateCheckoutSerializer(serializers.Serializer):
     Campos obrigatórios conforme: https://docs.asaas.com/reference/criar-novo-checkout
     """
     
-    value = serializers.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        required=True,
-        help_text="Valor do checkout",
-        error_messages={
-            "required": "O campo valor é obrigatório.",
-            "invalid": "Valor inválido."
-        }
-    )
-    
     customer = serializers.CharField(
         required=True,
         help_text="ID do cliente no ASAAS",
@@ -52,53 +41,11 @@ class CreateCheckoutSerializer(serializers.Serializer):
         }
     )
     
-    # Campos opcionais conforme documentação ASAAS
-    description = serializers.CharField(
-        max_length=500,
-        required=False,
-        allow_blank=True,
-        help_text="Descrição do checkout"
-    )
-    
     externalReference = serializers.CharField(
         max_length=100,
         required=False,
         allow_blank=True,
         help_text="Referência externa para identificação"
-    )
-    
-    # URLs de callback (opcionais)
-    successUrl = serializers.URLField(
-        required=True,
-        allow_blank=True,
-        allow_null=True,
-        help_text="URL de redirecionamento em caso de sucesso",
-        error_messages={
-            "invalid": "URL de sucesso inválida.",
-            "required": "O campo successUrl é obrigatório.",
-        }
-    )
-    
-    failureUrl = serializers.URLField(
-        required=True,
-        allow_blank=True,
-        allow_null=True,
-        help_text="URL de redirecionamento em caso de falha",
-        error_messages={
-            "invalid": "URL de falha inválida.",
-            "required": "O campo failureUrl é obrigatório.",
-        }
-    )
-
-    expiresUrl = serializers.URLField(
-        required=True,
-        allow_blank=True,
-        allow_null=True,
-        help_text="URL de redirecionamento em caso de expiração",
-        error_messages={
-            "invalid": "URL de expiração inválida.",
-            "required": "O campo expiresUrl é obrigatório.",
-        }
     )
     
     # Aceita callback como objeto aninhado
@@ -110,6 +57,11 @@ class CreateCheckoutSerializer(serializers.Serializer):
             "invalid": "Callback deve ser um objeto."
         }
     )
+    
+    # Campos de URL que serão extraídos do callback
+    successUrl = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    failureUrl = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    expiresUrl = serializers.URLField(required=False, allow_blank=True, allow_null=True)
     
     def to_internal_value(self, data):
         """Extrai URLs do objeto callback antes da validação"""
@@ -129,29 +81,13 @@ class CreateCheckoutSerializer(serializers.Serializer):
                 data['failureUrl'] = callback_data['cancelUrl']
             
             # Move expiredUrl do callback para o nível superior (Asaas usa expiredUrl)
-            if 'expiredUrl' in callback_data and 'expiresUrl' not in data:
+            if 'expiredUrl' in callback_data and 'expiredUrl' not in data:
                 data['expiresUrl'] = callback_data['expiredUrl']
-            # Também aceita expiresUrl para compatibilidade
-            elif 'expiresUrl' in callback_data and 'expiresUrl' not in data:
-                data['expiresUrl'] = callback_data['expiresUrl']
             
             # Remove o objeto callback do data original
             data.pop('callback')
         
         return super().to_internal_value(data)
-    
-    # Configurações de pagamento (opcionais)
-    installments = serializers.IntegerField(
-        min_value=1,
-        max_value=12,
-        default=1,
-        required=False,
-        help_text="Número de parcelas",
-        error_messages={
-            "min_value": "Número mínimo de parcelas é 1.",
-            "max_value": "Número máximo de parcelas é 12."
-        }
-    )
     
     paymentMethods = serializers.ListField(
         child=serializers.ChoiceField(choices=[
@@ -170,12 +106,11 @@ class CreateCheckoutSerializer(serializers.Serializer):
     # Campo para itens do checkout
     items = serializers.ListField(
         child=serializers.DictField(),
-        required=True,
+        required=False,
         allow_empty=True,
-        help_text="Lista de itens do checkout",
+        help_text="Lista de itens do checkout (se não informado, será buscado do pedido via externalReference)",
         error_messages={
             "invalid": "Lista de itens inválida.",
-            "required": "O campo items é obrigatório.",
         }
     )
     
@@ -252,6 +187,16 @@ class CreateCheckoutSerializer(serializers.Serializer):
                         raise serializers.ValidationError("Quantidade do item deve ser um número inteiro válido.")
         
         return value
+    
+    def validate(self, data):
+        """Validação cruzada dos campos"""
+        # Se não informou value E não informou externalReference, é obrigatório informar pelo menos um
+        if not data.get('value') and not data.get('externalReference'):
+            raise serializers.ValidationError(
+                "É necessário informar 'value' ou 'externalReference'. "
+                "Se 'externalReference' for informado, o valor e os itens serão buscados do pedido."
+            )
+        return data
 
 
 class UpdateCheckoutSerializer(serializers.Serializer):

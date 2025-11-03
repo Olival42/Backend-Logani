@@ -1,6 +1,7 @@
 # Django
 Django>=4.2,<5.0
 djangorestframework>=3.15,<4.0
+django-cors-headers>=4.0
 
 # Autenticação
 bcrypt>=4.0

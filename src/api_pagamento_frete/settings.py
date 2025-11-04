@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'modules.webhook',
     'modules.email',
     'modules.email.tasks',
+    'modules.frete',
 ]
 
 MIDDLEWARE = [
@@ -144,8 +145,19 @@ ASAAS_API_URL = os.getenv('ASAAS_API_URL', 'https://api-sandbox.asaas.com/v3')
 ASAAS_API_TOKEN = os.getenv('ASAAS_API_TOKEN')
 ASAAS_ENVIRONMENT = os.getenv('ASAAS_ENVIRONMENT', 'sandbox')  # sandbox or productionvariáveis de ambiente")
 
+# Melhor Envio API Configuration
+MELHOR_ENVIO_CLIENT_ID = os.getenv('MELHOR_ENVIO_CLIENT_ID')
+MELHOR_ENVIO_CLIENT_SECRET = os.getenv('MELHOR_ENVIO_CLIENT_SECRET')
+MELHOR_ENVIO_REDIRECT_URI = os.getenv('MELHOR_ENVIO_REDIRECT_URI')
+MELHOR_ENVIO_ENVIRONMENT = os.getenv('MELHOR_ENVIO_ENVIRONMENT', 'sandbox')  # sandbox or production
+# Token de acesso direto (prioridade sobre OAuth)
+MELHOR_ENVIO_ACCESS_TOKEN = os.getenv('ACESS_TOKEN_MELHOR_ENVIO') or os.getenv('ACCESS_TOKEN_MELHOR_ENVIO')
+
 # Order Configuration
 DAYS_TO_CANCEL = int(os.getenv('DAYS_TO_CANCEL', '0'))
+
+# Shipping Configuration
+OWNER_CEP = os.getenv('OWNER_CEP', '').strip()  # CEP de origem para cálculos de frete
 
 # Email Configuration
 OWNER_EMAIL = os.getenv('OWNER_EMAIL', '')

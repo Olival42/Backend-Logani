@@ -9,10 +9,11 @@
 5. [Sistema de Webhooks](#sistema-de-webhooks)
 6. [Sistema de Emails](#sistema-de-emails)
 7. [Processamento Assíncrono com Celery](#processamento-assíncrono-com-celery)
-8. [Transações e Consistência de Dados](#transações-e-consistência-de-dados)
-9. [Modelagem de Dados](#modelagem-de-dados)
-10. [Endpoints da API](#endpoints-da-api)
-11. [Considerações de Performance](#considerações-de-performance)
+8. [Integração com Melhor Envio](#integração-com-melhor-envio)
+9. [Transações e Consistência de Dados](#transações-e-consistência-de-dados)
+10. [Modelagem de Dados](#modelagem-de-dados)
+11. [Endpoints da API](#endpoints-da-api)
+12. [Considerações de Performance](#considerações-de-performance)
 
 ---
 
@@ -35,6 +36,9 @@ Esta API gerencia o processo completo de pedidos, pagamentos e frete, integrando
 5. Webhooks para notificações de pagamento
 6. Cancelamento de pedidos com estorno automático
 7. Sistema de notificações por email assíncronas (texto formatado)
+8. Integração com Melhor Envio para cálculo de frete
+9. Autenticação OAuth com Melhor Envio
+10. Gestão de tokens OAuth com renovação automática
 
 ---
 
@@ -58,6 +62,15 @@ src/
 │   ├── pagamento/                # Módulo de pagamentos
 │   ├── webhook/                  # Processamento de webhooks
 │   ├── checkout/                 # Gerenciamento de checkouts
+│   ├── frete/                    # Módulo de frete (Melhor Envio)
+│   │   ├── domain/               # Entidades e serviços
+│   │   │   ├── entities/         # Token, Product, ShippingQuote
+│   │   │   ├── services/         # Auth, Shipping, ProductMock
+│   │   │   └── repositories/     # Interfaces de repositório
+│   │   ├── application/          # Casos de uso e views
+│   │   └── adapters/             # Cliente HTTP, persistência
+│   │       ├── external/         # Cliente Melhor Envio
+│   │       └── persistence/      # Repositórios Django
 │   └── email/                    # Serviço de emails
 │       ├── domain/services/      # Lógica de negócio
 │       └── tasks.py              # Tasks Celery
@@ -426,6 +439,344 @@ Os emails são gerados em texto simples formatado, utilizando caracteres especia
 
 ---
 
+## Integração com Melhor Envio
+
+### Visão Geral
+
+O sistema integra com a API do Melhor Envio para cálculo de frete de produtos. A integração utiliza OAuth 2.0 para autenticação, permitindo renovação automática de tokens através de refresh tokens.
+
+### Arquitetura do Módulo de Frete
+
+O módulo `frete` segue Clean Architecture com as seguintes camadas:
+
+- **Domain**: Entidades (`Token`, `Product`, `ShippingQuote`), serviços de negócio e interfaces de repositório
+- **Application**: Casos de uso e views da API REST
+- **Adapters**: Cliente HTTP para API do Melhor Envio e persistência usando Django ORM
+
+### Configuração
+
+```python
+# settings.py
+MELHOR_ENVIO_CLIENT_ID = os.getenv('MELHOR_ENVIO_CLIENT_ID')
+MELHOR_ENVIO_CLIENT_SECRET = os.getenv('MELHOR_ENVIO_CLIENT_SECRET')
+MELHOR_ENVIO_REDIRECT_URI = os.getenv('MELHOR_ENVIO_REDIRECT_URI')
+MELHOR_ENVIO_ENVIRONMENT = os.getenv('MELHOR_ENVIO_ENVIRONMENT', 'sandbox')  # sandbox ou production
+MELHOR_ENVIO_ACCESS_TOKEN = os.getenv('ACESS_TOKEN_MELHOR_ENVIO')  # Token manual (opcional)
+OWNER_CEP = os.getenv('OWNER_CEP')  # CEP de origem para cálculos de frete
+```
+
+### Autenticação OAuth 2.0
+
+#### Fluxo de Autenticação
+
+```mermaid
+sequenceDiagram
+    participant Frontend
+    participant API
+    participant AuthService
+    participant MelhorEnvioAPI
+    participant TokenRepository
+
+    Frontend->>API: GET /shippings/auth/url/
+    API->>API: Gera URL de autorização OAuth
+    API-->>Frontend: Retorna URL de autorização
+    
+    Frontend->>MelhorEnvioAPI: Redireciona para URL OAuth
+    MelhorEnvioAPI->>MelhorEnvioAPI: Usuário autoriza aplicativo
+    MelhorEnvioAPI->>API: GET /melhor-envio/callback/?code=AUTH_CODE
+    API->>AuthService: authenticate_with_code(code)
+    AuthService->>MelhorEnvioAPI: POST /oauth/token (trocando código por token)
+    MelhorEnvioAPI-->>AuthService: Retorna access_token e refresh_token
+    AuthService->>TokenRepository: save(token)
+    TokenRepository->>TokenRepository: Salva token no banco
+    API-->>Frontend: Retorna sucesso
+```
+
+#### Endpoints de Autenticação
+
+##### 1. Obter URL de Autorização
+```
+GET /shippings/auth/url/
+Query params (opcionais):
+- redirect_uri: URI de redirecionamento
+- state: String para prevenção de CSRF
+
+Response:
+{
+  "auth_url": "https://sandbox.melhorenvio.com.br/oauth/authorize?client_id=...&redirect_uri=...&response_type=code&scope=shipping-calculate shipping-companies",
+  "instructions": "Redirecione o usuário para esta URL..."
+}
+```
+
+##### 2. Callback OAuth (Automático)
+```
+GET /melhor-envio/callback/?code=AUTH_CODE&state=...
+
+Response:
+{
+  "success": true,
+  "message": "Autenticação realizada com sucesso! Token salvo automaticamente.",
+  "token": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "expires_in": 2592000,
+    "token_type": "Bearer"
+  },
+  "saved": true,
+  "token_preview": "eyJ0e...nTKfE"
+}
+```
+
+##### 3. Autenticação Manual (POST)
+```
+POST /shippings/auth/
+Content-Type: application/json
+
+{
+  "authorization_code": "AUTH_CODE_FROM_OAUTH",
+  "redirect_uri": "https://seu-site.com/callback"  // opcional
+}
+
+Response:
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "expires_in": 2592000,
+  "token_type": "Bearer"
+}
+```
+
+##### 4. Renovar Token
+```
+POST /shippings/auth/refresh/
+
+Response:
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "expires_in": 2592000,
+  "token_type": "Bearer"
+}
+```
+
+##### 5. Status do Token (Debug)
+```
+GET /shippings/auth/status/
+
+Response:
+{
+  "token_in_env": true,
+  "token_in_db": true,
+  "token_valid": true,
+  "token_source": "oauth",
+  "can_refresh": true,
+  "token_db_details": {
+    "has_access_token": true,
+    "has_refresh_token": true,
+    "access_token_length": 1701,
+    "refresh_token_length": 256,
+    "expires_in": 2592000,
+    "created_at": "2025-11-04T19:39:19.010712",
+    "is_expired": false,
+    "source": "oauth"
+  },
+  "environment": "sandbox",
+  "client_id_configured": true,
+  "client_secret_configured": true,
+  "redirect_uri_configured": true
+}
+```
+
+### Gerenciamento de Tokens
+
+#### Prioridade de Tokens
+
+1. **Token do `.env`** (`ACESS_TOKEN_MELHOR_ENVIO`): Prioridade máxima, usado quando configurado
+2. **Token OAuth do Banco**: Token gerado via OAuth e salvo no banco de dados
+3. **Renovação Automática**: Tokens OAuth são renovados automaticamente quando expirados (se tiverem refresh_token)
+
+#### Ciclo de Vida do Token
+
+```python
+class MelhorEnvioAuthService:
+    def get_valid_token(self) -> Optional[Token]:
+        # 1. Busca token (prioriza .env)
+        token = self.token_repository.get_latest()
+        
+        # 2. Se token do .env, retorna (sempre válido)
+        if not token.refresh_token:
+            return token
+        
+        # 3. Se token OAuth expirado, renova automaticamente
+        if token.is_expired():
+            token = self.refresh_access_token()
+        
+        return token
+```
+
+### Cálculo de Frete
+
+#### Endpoint de Cálculo
+
+```
+POST /shippings/calculate/
+Content-Type: application/json
+
+{
+  "to_postal_code": "01018020",  // CEP de destino (obrigatório)
+  "products": [                   // Lista de produtos (obrigatório)
+    {
+      "product_id": "1",
+      "quantity": 2
+    },
+    {
+      "product_id": "2",
+      "quantity": 1
+    }
+  ],
+  "from_postal_code": "96020360",  // CEP de origem (opcional, usa OWNER_CEP se não informado)
+  "receipt": false,                 // Recebimento (opcional)
+  "own_hand": false,                // Mão própria (opcional)
+  "services": "1,2,18"              // IDs de serviços específicos (opcional)
+}
+
+Response:
+{
+  "quotes": [
+    {
+      "id": 1,
+      "name": "PAC",
+      "price": "46.02",
+      "custom_price": "46.02",
+      "currency": "R$",
+      "delivery_time": 8,
+      "custom_delivery_time": 8,
+      "company": {
+        "id": 1,
+        "name": "Correios",
+        "picture": "https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png"
+      },
+      "final_price": 46.02,
+      "final_delivery_time": 8
+    },
+    // ... outras opções
+  ],
+  "count": 5
+}
+```
+
+#### Fluxo de Cálculo de Frete
+
+```mermaid
+sequenceDiagram
+    participant Frontend
+    participant ShippingView
+    participant ShippingService
+    participant AuthService
+    participant ProductService
+    participant MelhorEnvioClient
+    participant MelhorEnvioAPI
+
+    Frontend->>ShippingView: POST /shippings/calculate/
+    ShippingView->>ShippingView: Valida dados (CEP, produtos)
+    ShippingView->>ShippingService: calculate_shipping()
+    
+    ShippingService->>AuthService: get_valid_token()
+    AuthService->>AuthService: Verifica/renova token se necessário
+    AuthService-->>ShippingService: Retorna token válido
+    
+    ShippingService->>ProductService: get_products_by_ids()
+    ProductService-->>ShippingService: Retorna produtos mockados
+    
+    ShippingService->>MelhorEnvioClient: calculate_shipping()
+    MelhorEnvioClient->>MelhorEnvioAPI: POST /shipment/calculate
+    MelhorEnvioAPI-->>MelhorEnvioClient: Retorna cotações
+    MelhorEnvioClient-->>ShippingService: Retorna ShippingQuote[]
+    ShippingService-->>ShippingView: Retorna cotações
+    ShippingView-->>Frontend: JSON com opções de frete
+```
+
+#### Produtos Mockados
+
+Os produtos são mockados usando o `ProdutoRepository` do sistema. O frontend envia apenas IDs e quantidades:
+
+```python
+# Produtos disponíveis (mockados)
+products = {
+    "1": {
+        "id": "1",
+        "name": "Produto 1",
+        "weight": 0.5,  # kg
+        "width": 20,    # cm
+        "height": 10,   # cm
+        "length": 30    # cm
+    },
+    # ... outros produtos
+}
+```
+
+### Modelagem de Dados - Frete
+
+```sql
+-- Tokens OAuth do Melhor Envio
+CREATE TABLE melhor_envio_token (
+    id SERIAL PRIMARY KEY,
+    access_token TEXT UNIQUE NOT NULL,
+    refresh_token TEXT UNIQUE,
+    expires_in INTEGER DEFAULT 2592000,
+    token_type VARCHAR(50) DEFAULT 'Bearer',
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+```
+
+### Tratamento de Erros
+
+#### Erros Comuns
+
+1. **`invalid_client`**: Credenciais OAuth incorretas
+   - **Solução**: Verificar `MELHOR_ENVIO_CLIENT_ID` e `MELHOR_ENVIO_CLIENT_SECRET` no `.env`
+
+2. **`invalid_code`**: Código de autorização expirado ou inválido
+   - **Solução**: Gerar novo código de autorização (códigos expiram rapidamente e só podem ser usados uma vez)
+
+3. **`Unauthenticated (401)`**: Token inválido ou expirado
+   - **Solução**: Renovar token via `/shippings/auth/refresh/` ou reautenticar
+
+4. **Token sem refresh_token**: Token foi gerado manualmente
+   - **Solução**: Autorizar via OAuth completo para obter refresh_token
+
+### Ambientes
+
+- **Sandbox**: `https://sandbox.melhorenvio.com.br`
+- **Produção**: `https://melhorenvio.com.br` / `https://auth.melhorenvio.com.br` (OAuth)
+
+### Variáveis de Ambiente - Melhor Envio
+
+```env
+# Melhor Envio OAuth
+MELHOR_ENVIO_CLIENT_ID=seu_client_id_aqui
+MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
+MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
+MELHOR_ENVIO_ENVIRONMENT=sandbox  # ou production
+
+# Token Manual (opcional - para testes rápidos)
+ACESS_TOKEN_MELHOR_ENVIO=seu_token_aqui
+
+# CEP de origem (obrigatório para cálculos)
+OWNER_CEP=00000000
+```
+
+### Segurança e Boas Práticas
+
+1. **Não commitar credenciais**: Todas as credenciais devem estar no `.env`
+2. **HTTPS obrigatório**: Use HTTPS em produção para callbacks OAuth
+3. **Validação de redirect_uri**: O `redirect_uri` deve ser exatamente igual ao configurado no painel do Melhor Envio
+4. **Tokens sensíveis**: Tokens OAuth são armazenados no banco e devem ser protegidos
+5. **Renovação automática**: Sempre use OAuth completo (não tokens manuais) em produção para ter renovação automática
+
+---
+
 ## Processamento Assíncrono com Celery
 
 ### Configuração
@@ -642,6 +993,17 @@ POST   /clientes/sync-asaas/      # Sincronizar com Asaas
 POST   /webhook/asaas/            # Receber webhook do Asaas
 ```
 
+### Frete (Melhor Envio)
+
+```
+GET    /shippings/auth/url/       # Obter URL de autorização OAuth
+GET    /melhor-envio/callback/    # Callback OAuth (automático)
+POST   /shippings/auth/           # Autenticar com código manual
+POST   /shippings/auth/refresh/   # Renovar token
+GET    /shippings/auth/status/    # Status do token (debug)
+POST   /shippings/calculate/      # Calcular frete
+```
+
 ### Emails
 
 **Nota**: Não há endpoint público para envio de emails. Os emails são enviados automaticamente pelo sistema em eventos específicos (cancelamento de pedido, estorno, etc.) através de tasks Celery assíncronas.
@@ -754,6 +1116,14 @@ EMAIL_USE_TLS=True
 EMAIL_HOST_USER=your-email@gmail.com
 EMAIL_HOST_PASSWORD=your-app-password
 
+# Melhor Envio
+MELHOR_ENVIO_CLIENT_ID=seu_client_id_aqui
+MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
+MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
+MELHOR_ENVIO_ENVIRONMENT=sandbox
+ACESS_TOKEN_MELHOR_ENVIO=seu_token_manual_aqui  # opcional
+OWNER_CEP=96020360  # CEP de origem para cálculos
+
 # Configurações
 DAYS_TO_CANCEL=2
 PORT=8000
@@ -831,7 +1201,7 @@ services:
 
 ## Versionamento
 
-### Versão Atual: 1.0.0
+### Versão Atual: 1.1.0
 
 - Sistema completo de pedidos
 - Integração com Asaas
@@ -841,6 +1211,10 @@ services:
 - Transações atômicas para consistência de dados
 - Rollback automático em operações com APIs externas
 - Sistema de limpeza assíncrona para recursos órfãos
+- **Integração com Melhor Envio para cálculo de frete**
+- **Autenticação OAuth 2.0 com Melhor Envio**
+- **Gestão automática de tokens OAuth com renovação**
+- **Cálculo de frete por produtos com múltiplas opções**
 
 ---
 
@@ -850,6 +1224,7 @@ services:
 - [Django REST Framework](https://www.django-rest-framework.org/)
 - [Celery Documentation](https://docs.celeryproject.org/)
 - [Asaas API Documentation](https://docs.asaas.com/)
+- [Melhor Envio API Documentation](https://docs.melhorenvio.com.br/)
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
 
 ---

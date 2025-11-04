@@ -21,6 +21,8 @@ Construído com Python e Django seguindo princípios de **Clean Architecture** e
 - 🔔 **Webhooks Inteligentes:** Processamento automático de notificações de pagamento
 - ↩️ **Estorno Automático:** Cancelamento de pedidos com estorno automático
 - 📧 **Emails Assíncronos:** Notificações por email (Celery) - performance otimizada
+- 🚚 **Cálculo de Frete:** Integração com Melhor Envio para cálculo de frete por produtos
+- 🔑 **OAuth 2.0 Melhor Envio:** Autenticação OAuth com renovação automática de tokens
 - 🏗️ **Arquitetura Limpa:** Clean Architecture + DDD + Repository Pattern
 
 ## 🛠️ Tecnologias
@@ -32,6 +34,7 @@ Construído com Python e Django seguindo princípios de **Clean Architecture** e
 | **Cache/Messaging** | Redis 7 |
 | **Processamento Assíncrono** | Celery 5.3 |
 | **Gateway de Pagamento** | [Asaas API](https://docs.asaas.com/) |
+| **Cálculo de Frete** | [Melhor Envio API](https://docs.melhorenvio.com.br/) |
 | **Autenticação** | JWT (PyJWT) |
 | **Containerização** | Docker, Docker Compose |
 | **Arquitetura** | Clean Architecture + DDD |
@@ -87,8 +90,21 @@ Construído com Python e Django seguindo princípios de **Clean Architecture** e
 
 ## 📚 Documentação
 
-- **[Documentação Técnica - Fluxo da API](./DOCUMENTACAO_TECNICA_FLUXO_API.md)** - Arquitetura, fluxos e integração completa
+- **[Documentação Técnica - Fluxo da API](./DOCUMENTACAO_TECNICA_FLUXO_API.md)** - Arquitetura, fluxos e integração completa (inclui Melhor Envio)
 - **[Fluxo Completo da API](./FLUXO_API_COMPLETO.md)** - Documentação técnica detalhada
+
+### Integração com Melhor Envio
+
+A API integra com o Melhor Envio para cálculo de frete. A autenticação utiliza OAuth 2.0 com renovação automática de tokens:
+
+1. **Primeiro acesso**: Gere URL de autorização via `GET /shippings/auth/url/`
+2. **Autorização**: Redirecione o usuário para a URL gerada
+3. **Callback automático**: O sistema recebe o código e salva o token automaticamente
+4. **Uso**: O token é usado automaticamente para cálculos de frete
+
+**Produtos mockados**: O frontend envia apenas IDs e quantidades. Os produtos são buscados automaticamente do repositório mockado.
+
+Veja mais detalhes na [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md#integração-com-melhor-envio).
 
 ## 🏗️ Arquitetura
 
@@ -102,6 +118,7 @@ src/modules/
 ├── checkout/      # Links de pagamento (Asaas)
 ├── pagamento/     # Gestão de pagamentos
 ├── webhook/       # Processamento de notificações
+├── frete/         # Cálculo de frete (Melhor Envio)
 └── email/         # Envio de emails automáticos
 ```
 
@@ -111,6 +128,8 @@ src/modules/
 Frontend → API → PostgreSQL
               ↓
             Asaas ← Webhook → Celery (Emails Assíncronos)
+              ↓
+         Melhor Envio (Cálculo de Frete)
               ↓
          Redis Cache/MQ
 ```
@@ -162,6 +181,14 @@ REDIS_PORT=6379
 ASAAS_API_KEY=sua-api-key-asaas
 ASAAS_BASE_URL=https://sandbox.asaas.com/api/v3
 
+# Melhor Envio (obrigatório para cálculo de frete)
+MELHOR_ENVIO_CLIENT_ID=seu_client_id_aqui
+MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
+MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
+MELHOR_ENVIO_ENVIRONMENT=sandbox  # ou production
+ACESS_TOKEN_MELHOR_ENVIO=seu_token_manual_aqui  # opcional (para testes)
+OWNER_CEP=96020360  # CEP de origem para cálculos (obrigatório)
+
 # Email (obrigatório para notificações de pedidos)
 OWNER_EMAIL=seu-email@exemplo.com
 DEFAULT_FROM_EMAIL=noreply@api-pagamento.com
@@ -185,7 +212,9 @@ DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
 
 **Importante:** 
 - Obtenha sua `ASAAS_API_TOKEN` em [https://www.asaas.com](https://www.asaas.com)
+- Obtenha credenciais do Melhor Envio em [https://melhorenvio.com.br](https://melhorenvio.com.br)
 - Configure o `OWNER_EMAIL` para receber notificações automáticas
+- Configure o `OWNER_CEP` para cálculos de frete
 - Emails são processados de forma assíncrona via Celery (melhor performance)
 - O sistema inclui 3 serviços no Docker: `web`, `celery` (emails) e `celery-beat` (agendamento)
 
@@ -213,6 +242,14 @@ DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
 
 ### Webhooks
 - `POST /webhook/asaas/` - Receber notificações do Asaas
+
+### Frete (Melhor Envio)
+- `GET /shippings/auth/url/` - Obter URL de autorização OAuth
+- `GET /melhor-envio/callback/` - Callback OAuth (automático)
+- `POST /shippings/auth/` - Autenticar com código manual
+- `POST /shippings/auth/refresh/` - Renovar token OAuth
+- `GET /shippings/auth/status/` - Status do token (debug)
+- `POST /shippings/calculate/` - Calcular frete por produtos
 
 **📖 Consulte a [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md) para detalhes completos de cada endpoint.**
 
@@ -354,6 +391,32 @@ curl -X POST http://localhost:8000/api/checkout/create/ \
   }'
 ```
 
+### 6. Calcular Frete
+```bash
+curl -X POST http://localhost:8000/api/shippings/calculate/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "to_postal_code": "01018020",
+    "products": [
+      {
+        "product_id": "1",
+        "quantity": 2
+      },
+      {
+        "product_id": "2",
+        "quantity": 1
+      }
+    ]
+  }'
+```
+
+### 7. Obter URL de Autorização OAuth (Melhor Envio)
+```bash
+curl -X GET http://localhost:8000/api/shippings/auth/url/ \
+  -H "Authorization: Bearer SEU_TOKEN"
+```
+
 **📖 Veja mais exemplos na [Documentação Técnica para Frontend](./DOCUMENTACAO_TECNICA_FRONTEND.md)**
 
 ## 🐛 Troubleshooting
@@ -398,6 +461,16 @@ docker-compose up -d
 - Verifique se o Celery está rodando: `docker-compose ps celery`
 - Verifique logs de tempo de resposta
 - Considere escalar workers do Celery se necessário
+
+### Erro: "Token inválido ou expirado" no cálculo de frete
+- Verifique se o token do Melhor Envio está configurado no `.env` (`ACESS_TOKEN_MELHOR_ENVIO`)
+- Ou autentique via OAuth: `GET /shippings/auth/url/` → autorize → callback
+- Verifique status do token: `GET /shippings/auth/status/`
+
+### Erro: "invalid_client" ao autenticar com Melhor Envio
+- Verifique se `MELHOR_ENVIO_CLIENT_ID` e `MELHOR_ENVIO_CLIENT_SECRET` estão corretos no `.env`
+- Certifique-se de que não há espaços extras nas credenciais
+- Verifique se o `redirect_uri` está exatamente igual ao configurado no painel do Melhor Envio
 
 ## 🚀 Deploy e Produção
 

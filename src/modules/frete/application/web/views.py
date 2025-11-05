@@ -329,15 +329,27 @@ class ShippingCalculationView(APIView):
     
     def post(self, request):
         """
-        Calcula frete baseado em produtos
+        Calcula frete baseado em produtos ou pedido
         
         POST /shippings/calculate/
+        
+        Opção 1: Com produtos diretamente
         Body: {
             "to_postal_code": "01018020",
             "products": [
                 {"product_id": "1", "quantity": 2},
                 {"product_id": "2", "quantity": 1}
             ],
+            "from_postal_code": "96020360",  # opcional, usa OWNER_CEP do .env se não informado
+            "receipt": false,  # opcional
+            "own_hand": false,  # opcional
+            "services": "1,2,18"  # opcional
+        }
+        
+        Opção 2: Com order_id (busca produtos do pedido automaticamente)
+        Body: {
+            "to_postal_code": "01018020",
+            "order_id": "uuid-do-pedido",
             "from_postal_code": "96020360",  # opcional, usa OWNER_CEP do .env se não informado
             "receipt": false,  # opcional
             "own_hand": false,  # opcional
@@ -372,7 +384,38 @@ class ShippingCalculationView(APIView):
                 )
             
             to_postal_code = serializer.validated_data['to_postal_code']
-            products_input = serializer.validated_data['products']
+            order_id = serializer.validated_data.get('order_id')
+            
+            # Se order_id foi fornecido, busca produtos do pedido
+            if order_id:
+                from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
+                
+                order_repository = OrderRepository()
+                order = order_repository.get_by_id(order_id)
+                
+                if not order:
+                    return Response(
+                        {'error': f'Pedido com ID {order_id} não encontrado'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Extrai produtos do pedido no formato esperado
+                products_input = [
+                    {
+                        'product_id': item.product_id,
+                        'quantity': item.quantity
+                    }
+                    for item in order.items
+                ]
+                
+                if not products_input or len(products_input) == 0:
+                    return Response(
+                        {'error': f'Pedido {order_id} não possui produtos'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            else:
+                # Usa produtos fornecidos diretamente
+                products_input = serializer.validated_data.get('products', [])
             
             # Prepara opções
             options = {}
@@ -395,10 +438,19 @@ class ShippingCalculationView(APIView):
             # Serializa resposta
             quotes_serializer = ShippingQuoteSerializer(quotes, many=True)
             
-            return Response({
+            response_data = {
                 'quotes': quotes_serializer.data,
                 'count': len(quotes)
-            }, status=status.HTTP_200_OK)
+            }
+            
+            # Adiciona informação sobre origem dos produtos se foi usado order_id
+            if order_id:
+                response_data['order_id'] = order_id
+                response_data['products_source'] = 'order'
+            else:
+                response_data['products_source'] = 'direct'
+            
+            return Response(response_data, status=status.HTTP_200_OK)
             
         except ValueError as e:
             return Response(

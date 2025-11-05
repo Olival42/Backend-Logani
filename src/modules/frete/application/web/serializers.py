@@ -27,6 +27,10 @@ class ProductInputSerializer(serializers.Serializer):
 class ShippingCalculationSerializer(serializers.Serializer):
     """
     Serializer para cálculo de frete
+    
+    Aceita duas formas de entrada:
+    1. Com products: lista de produtos com IDs e quantidades
+    2. Com order_id: ID do pedido (busca produtos automaticamente do pedido)
     """
     from_postal_code = serializers.CharField(
         required=False,
@@ -37,7 +41,16 @@ class ShippingCalculationSerializer(serializers.Serializer):
         required=True,
         help_text="CEP de destino (formato: 00000000 ou 00000-000)"
     )
-    products = ProductInputSerializer(many=True, required=True, help_text="Lista de produtos")
+    products = ProductInputSerializer(
+        many=True, 
+        required=False, 
+        help_text="Lista de produtos (obrigatório se order_id não for informado)"
+    )
+    order_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="ID do pedido. Se informado, busca produtos automaticamente do pedido (alternativa a products)"
+    )
     receipt = serializers.BooleanField(
         required=False,
         default=False,
@@ -53,6 +66,32 @@ class ShippingCalculationSerializer(serializers.Serializer):
         allow_null=True,
         help_text="IDs dos serviços separados por vírgula (ex: '1,2,18')"
     )
+    
+    def validate(self, data):
+        """
+        Valida que pelo menos products ou order_id foi informado
+        """
+        order_id = data.get('order_id')
+        products = data.get('products', [])
+        
+        # Remove espaços vazios do order_id
+        if order_id:
+            order_id = order_id.strip()
+            if not order_id:
+                order_id = None
+        
+        if not order_id and (not products or len(products) == 0):
+            raise serializers.ValidationError(
+                "Deve ser informado 'products' ou 'order_id'. Se order_id for informado, os produtos serão buscados automaticamente do pedido."
+            )
+        
+        if order_id and products and len(products) > 0:
+            raise serializers.ValidationError(
+                "Não é possível informar 'products' e 'order_id' ao mesmo tempo. Use apenas um dos dois."
+            )
+        
+        data['order_id'] = order_id if order_id else None
+        return data
     
     def validate_from_postal_code(self, value):
         # Se vazio, permite (será preenchido do .env)

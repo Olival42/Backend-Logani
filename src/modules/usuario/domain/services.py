@@ -114,13 +114,27 @@ class UserService:
             payload = Jwt_Utils.decode_token(refresh_token)
             
             jti = payload["jti"] 
+            exp = payload["exp"]
             
             if self.blacklist_repo.is_blacklisted(jti): 
                 raise ValueError("Refresh token revogado") 
             
-            new_access_token = Jwt_Utils.create_access_token(payload["user_id"], payload["email"]) 
+            # Revoga o refresh token antigo
+            self.blacklist_repo.add_token(jti, exp)
             
-            return {"access": new_access_token} 
+            # Gera novos tokens
+            new_access_token = Jwt_Utils.create_access_token(payload["user_id"], payload["email"]) 
+            new_refresh_token = Jwt_Utils.create_refresh_token(payload["user_id"], payload["email"])
+            
+            # Obtém o expires_at do novo access token
+            new_payload = Jwt_Utils.decode_token(new_access_token)
+            expires_at = new_payload["exp"]
+            
+            return {
+                "access": new_access_token,
+                "refresh": new_refresh_token,
+                "expires_at": expires_at
+            } 
         except ValueError as e: 
             raise ValueError(str(e))
         

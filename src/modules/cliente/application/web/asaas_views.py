@@ -23,9 +23,10 @@ class AsaasClientCreateView(APIView):
         """
         Cria um novo cliente local e sincroniza com o Asaas
         
+        O nome do cliente será obtido automaticamente do usuário autenticado.
+        
         Body:
         {
-            "name": "Nome do Cliente",
             "cpf": "12345678901",
             "phone": "11999999999",
             "mobile_phone": "11999999999",
@@ -94,15 +95,18 @@ class AsaasClientCreateView(APIView):
 class AsaasClientUpdateView(APIView):
     """
     View para atualizar clientes com integração ao Asaas
+    O cliente é buscado automaticamente pelo Bearer token (user_id)
     """
     
-    def patch(self, request, client_id):
+    def patch(self, request):
         """
         Atualiza um cliente local e sincroniza com o Asaas
         
+        O cliente é identificado automaticamente pelo Bearer token.
+        O nome do cliente não pode ser alterado - sempre usa o nome do usuário autenticado.
+        
         Body: (todos os campos são opcionais)
         {
-            "name": "Novo Nome",
             "cpf": "98765432100",
             "phone": "11888888888",
             "mobile_phone": "11888888888",
@@ -130,9 +134,17 @@ class AsaasClientUpdateView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            payload = user_service.authenticate(token)
+            user_id = payload["user_id"]
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+
+        # Busca o cliente pelo user_id
+        client_repository = ClientRepository()
+        client = client_repository.get_by_user_id(str(user_id))
+        
+        if not client:
+            return ErrorResponse.not_found("Cliente não encontrado para o usuário autenticado")
 
         # Validação dos dados
         serializer = AsaasUpdateClientSerializer(data=request.data, partial=True)
@@ -143,7 +155,7 @@ class AsaasClientUpdateView(APIView):
         asaas_service = AsaasClientService()
         try:
             result = asaas_service.update_client_with_asaas(
-                client_id, 
+                str(client.id), 
                 serializer.validated_data
             )
             

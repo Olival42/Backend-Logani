@@ -121,9 +121,10 @@ class AsaasClientService:
         # Gera UUID se não foi fornecido, para usar como externalReference no ASAAS
         client_id = data.get("id") or str(uuid4())
 
+        # Usa o nome do usuário autenticado
         client_entity = ClientEntity(
             id=client_id,
-            name=data["name"],
+            name=user.name,  # Nome obtido do usuário autenticado
             cpf=data["cpf"],
             phone=data.get("phone"),
             mobile_phone=data["mobile_phone"],
@@ -264,9 +265,10 @@ class AsaasClientService:
             updated_address = existing_client.address
 
         # Cria nova entidade com dados atualizados
+        # Sempre usa o nome do usuário autenticado (não permite alteração)
         updated_client = ClientEntity(
             id=existing_client.id,
-            name=data.get("name", existing_client.name),
+            name=existing_client.user.name,  # Sempre usa o nome do usuário
             cpf=data.get("cpf", existing_client.cpf),
             phone=data.get("phone", existing_client.phone),
             mobile_phone=data.get("mobile_phone", existing_client.mobile_phone),

@@ -2,11 +2,6 @@ import re
 from modules.cliente.domain.entities.utils.cpf_utils import ValidateCpf
 
 class ClientValidators:
-    
-    def validate_name(name: str):
-        if re.search(r'\d', name):
-            raise ValueError("O nome não pode conter números")
-        return name
 
     def validate_cpf(cpf: str):
         cpf = re.sub(r'\D', '', cpf)

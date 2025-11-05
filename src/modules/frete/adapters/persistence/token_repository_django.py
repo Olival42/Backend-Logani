@@ -59,10 +59,47 @@ class TokenRepositoryDjango(ITokenRepository):
     def get_latest(self) -> Optional[Token]:
         """
         Obtém o token mais recente
-        Prioriza token da variável de ambiente se disponível
+        Prioridade:
+        1. Token do banco de dados (se existir e não estiver expirado)
+        2. Token da variável de ambiente ACESS_TOKEN_MELHOR_ENVIO (fallback)
         """
-        # Verifica se há token na variável de ambiente (prioridade)
-        access_token_env = getattr(settings, 'MELHOR_ENVIO_ACCESS_TOKEN', None)
+        # Primeiro tenta buscar do banco de dados
+        try:
+            model = MelhorEnvioTokenModel.objects.latest('created_at')
+            
+            # Verifica se o token não está expirado
+            if not model.is_expired():
+                return Token(
+                    access_token=model.access_token,
+                    refresh_token=model.refresh_token,
+                    expires_in=model.expires_in,
+                    token_type=model.token_type,
+                    created_at=model.created_at
+                )
+            # Se o token estiver expirado, continua para buscar do .env
+        except MelhorEnvioTokenModel.DoesNotExist:
+            # Se não encontrar no banco, continua para buscar do .env
+            pass
+        except Exception:
+            # Se houver qualquer outro erro, continua para buscar do .env
+            pass
+        
+        # Se não encontrou no banco ou está expirado, busca do .env
+        import os
+        from dotenv import load_dotenv
+        
+        load_dotenv()
+        
+        # Tenta buscar da variável de ambiente ACESS_TOKEN_MELHOR_ENVIO
+        access_token_env = os.getenv('ACESS_TOKEN_MELHOR_ENVIO')
+        
+        if not access_token_env:
+            # Tenta também via settings (caso esteja configurado lá)
+            access_token_env = getattr(settings, 'ACESS_TOKEN_MELHOR_ENVIO', None)
+        
+        if not access_token_env:
+            # Tenta também a variável antiga (caso ainda esteja em uso)
+            access_token_env = getattr(settings, 'MELHOR_ENVIO_ACCESS_TOKEN', None)
         
         if access_token_env:
             # Limpa o token (remove espaços e "Bearer" se presente)
@@ -80,18 +117,8 @@ class TokenRepositoryDjango(ITokenRepository):
                 created_at=timezone.now() - timedelta(days=1)  # Assume que foi criado há 1 dia
             )
         
-        # Se não há token no .env, busca no banco
-        try:
-            model = MelhorEnvioTokenModel.objects.latest('created_at')
-            return Token(
-                access_token=model.access_token,
-                refresh_token=model.refresh_token,
-                expires_in=model.expires_in,
-                token_type=model.token_type,
-                created_at=model.created_at
-            )
-        except MelhorEnvioTokenModel.DoesNotExist:
-            return None
+        # Se não encontrou em nenhum lugar, retorna None
+        return None
     
     def delete_all(self) -> None:
         """

@@ -90,6 +90,22 @@ class OrderResponseSerializer(serializers.Serializer):
     confirmed_at = serializers.DateTimeField(allow_null=True)
 
 
+class ShippingResponseSerializer(serializers.Serializer):
+    """Serializer para informações de frete no pedido"""
+    service_id = serializers.IntegerField()
+    service_name = serializers.CharField()
+    price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    custom_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    final_price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    delivery_time = serializers.IntegerField()
+    custom_delivery_time = serializers.IntegerField(allow_null=True)
+    final_delivery_time = serializers.IntegerField()
+    currency = serializers.CharField()
+    company = serializers.DictField(allow_null=True)
+    from_postal_code = serializers.CharField()
+    to_postal_code = serializers.CharField()
+
+
 class OrderDetailSerializer(serializers.Serializer):
     """Serializer para detalhes completos do pedido"""
     
@@ -101,6 +117,8 @@ class OrderDetailSerializer(serializers.Serializer):
     items = OrderItemResponseSerializer(many=True)
     
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
+    shipping = ShippingResponseSerializer(allow_null=True, required=False)
+    shipping_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
     total = serializers.DecimalField(max_digits=10, decimal_places=2)
     
     status = serializers.CharField()
@@ -171,5 +189,71 @@ class UpdateOrderSerializer(serializers.Serializer):
         """Valida se há pelo menos uma ação"""
         if not value or len(value) == 0:
             raise serializers.ValidationError("É necessário informar pelo menos uma ação.")
+        return value
+
+
+class AddShippingToOrderSerializer(serializers.Serializer):
+    """Serializer para adicionar serviço de frete ao pedido"""
+    
+    service_id = serializers.IntegerField(
+        required=True,
+        help_text="ID do serviço no Melhor Envio"
+    )
+    service_name = serializers.CharField(
+        required=True,
+        max_length=255,
+        help_text="Nome do serviço de frete"
+    )
+    price = serializers.DecimalField(
+        required=True,
+        max_digits=10,
+        decimal_places=2,
+        help_text="Preço do frete"
+    )
+    custom_price = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        max_digits=10,
+        decimal_places=2,
+        help_text="Preço customizado (se aplicável)"
+    )
+    delivery_time = serializers.IntegerField(
+        required=True,
+        min_value=1,
+        help_text="Prazo de entrega em dias"
+    )
+    custom_delivery_time = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Prazo customizado (se aplicável)"
+    )
+    currency = serializers.CharField(
+        required=False,
+        default='BRL',
+        max_length=3,
+        help_text="Moeda (padrão: BRL)"
+    )
+    company = serializers.DictField(
+        required=False,
+        allow_null=True,
+        help_text="Informações da transportadora (JSON)"
+    )
+    from_postal_code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=8,
+        help_text="CEP de origem (8 dígitos). Se não informado, usa OWNER_CEP do .env"
+    )
+    
+    def validate_from_postal_code(self, value):
+        """Valida CEP de origem"""
+        # Se vazio, permite (será preenchido do .env)
+        if not value:
+            return value
+        # Remove formatação
+        value = ''.join(filter(str.isdigit, value))
+        if len(value) != 8:
+            raise serializers.ValidationError("CEP de origem deve ter 8 dígitos")
         return value
 

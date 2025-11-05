@@ -131,3 +131,72 @@ class Order(models.Model):
         """Retorna a quantidade total de itens"""
         return sum(item.quantity for item in self.items.all())
 
+
+class OrderShipping(models.Model):
+    """
+    Modelo para armazenar informações do serviço de frete escolhido para um pedido
+    """
+    id = models.UUIDField(primary_key=True, editable=False)
+    
+    # Relacionamento com pedido (OneToOne - um pedido tem apenas um frete escolhido)
+    order = models.OneToOneField(
+        Order,
+        on_delete=models.CASCADE,
+        related_name="shipping",
+        help_text="Pedido relacionado"
+    )
+    
+    # Informações do serviço de frete
+    service_id = models.IntegerField(help_text="ID do serviço no Melhor Envio")
+    service_name = models.CharField(max_length=255, help_text="Nome do serviço de frete")
+    price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Preço do frete")
+    custom_price = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Preço customizado (se aplicável)"
+    )
+    delivery_time = models.IntegerField(help_text="Prazo de entrega em dias")
+    custom_delivery_time = models.IntegerField(
+        null=True, 
+        blank=True,
+        help_text="Prazo customizado (se aplicável)"
+    )
+    currency = models.CharField(max_length=3, default='BRL', help_text="Moeda")
+    
+    # Informações da transportadora (armazenadas como JSON)
+    company = models.JSONField(null=True, blank=True, help_text="Informações da transportadora")
+    
+    # CEPs
+    from_postal_code = models.CharField(max_length=8, help_text="CEP de origem")
+    to_postal_code = models.CharField(max_length=8, help_text="CEP de destino")
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = "order_shipping"
+        verbose_name = "Frete do Pedido"
+        verbose_name_plural = "Fretes dos Pedidos"
+    
+    def __str__(self):
+        return f"Frete {self.service_name} - Pedido {self.order.external_reference or self.order.id}"
+    
+    @property
+    def final_price(self):
+        """Retorna o preço final considerando custom_price se disponível"""
+        return self.custom_price if self.custom_price is not None else self.price
+    
+    @property
+    def final_delivery_time(self):
+        """Retorna o prazo final considerando custom_delivery_time se disponível"""
+        return self.custom_delivery_time if self.custom_delivery_time is not None else self.delivery_time
+    
+    def save(self, *args, **kwargs):
+        """Gera UUID automaticamente se não fornecido"""
+        if not self.id:
+            import uuid
+            self.id = uuid.uuid4()
+        super().save(*args, **kwargs)

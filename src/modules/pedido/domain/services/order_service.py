@@ -502,6 +502,133 @@ class OrderService:
             'items': items_data
         }
     
+    def add_shipping_to_order(
+        self,
+        order_id: str,
+        shipping_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Adiciona um serviço de frete ao pedido
+        
+        Args:
+            order_id: ID do pedido
+            shipping_data: Dados do serviço de frete escolhido {
+                'service_id': int,
+                'service_name': str,
+                'price': Decimal,
+                'custom_price': Optional[Decimal],
+                'delivery_time': int,
+                'custom_delivery_time': Optional[int],
+                'currency': str,
+                'company': Optional[dict],
+                'from_postal_code': str,
+                'to_postal_code': str
+            }
+            
+        Returns:
+            Dict com informações do pedido atualizado com frete
+        """
+        order = self.order_repository.get_by_id(order_id)
+        if not order:
+            raise ValueError("Pedido não encontrado")
+        
+        # Valida que o pedido está pendente
+        if order.status != 'PENDING':
+            raise ValueError(
+                f"Pedido não pode receber frete. Status atual: {order.status}. "
+                "Apenas pedidos PENDING podem receber frete."
+            )
+        
+        # Verifica se já existe frete no pedido
+        from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+        try:
+            existing_shipping = OrderShippingModel.objects.get(order_id=order_id)
+            # Remove frete existente para substituir
+            shipping_price = Decimal(str(existing_shipping.final_price))
+            order.total = order.total - shipping_price
+            existing_shipping.delete()
+        except OrderShippingModel.DoesNotExist:
+            pass
+        
+        # Calcula preço final do frete
+        shipping_price = Decimal(str(shipping_data.get('custom_price') or shipping_data['price']))
+        
+        # Atualiza o total do pedido (subtotal + frete)
+        new_total = order.subtotal + shipping_price
+        order.total = new_total
+        order.updated_at = datetime.now(timezone.utc)
+        
+        # Salva pedido atualizado
+        with transaction.atomic():
+            updated_order = self.order_repository.update(order)
+            
+            # Cria o registro de frete
+            OrderShippingModel.objects.create(
+                id=str(uuid4()),
+                order_id=updated_order.id,
+                service_id=shipping_data['service_id'],
+                service_name=shipping_data['service_name'],
+                price=Decimal(str(shipping_data['price'])),
+                custom_price=Decimal(str(shipping_data['custom_price'])) if shipping_data.get('custom_price') else None,
+                delivery_time=shipping_data['delivery_time'],
+                custom_delivery_time=shipping_data.get('custom_delivery_time'),
+                currency=shipping_data.get('currency', 'BRL'),
+                company=shipping_data.get('company'),
+                from_postal_code=shipping_data['from_postal_code'],
+                to_postal_code=shipping_data['to_postal_code']
+            )
+        
+        # Busca o frete criado para retornar
+        shipping = OrderShippingModel.objects.get(order_id=updated_order.id)
+        
+        # Prepara resposta
+        items_data = [
+            {
+                'product_id': item.product_id,
+                'product_name': item.product_name,
+                'quantity': item.quantity,
+                'unit_price': float(item.unit_price),
+                'total_price': float(item.total_price)
+            }
+            for item in updated_order.items
+        ]
+        
+        shipping_data_response = {
+            'service_id': shipping.service_id,
+            'service_name': shipping.service_name,
+            'price': float(shipping.price),
+            'custom_price': float(shipping.custom_price) if shipping.custom_price else None,
+            'final_price': float(shipping.final_price),
+            'delivery_time': shipping.delivery_time,
+            'custom_delivery_time': shipping.custom_delivery_time,
+            'final_delivery_time': shipping.final_delivery_time,
+            'currency': shipping.currency,
+            'company': shipping.company,
+            'from_postal_code': shipping.from_postal_code,
+            'to_postal_code': shipping.to_postal_code
+        }
+        
+        return {
+            'order_id': str(updated_order.id),
+            'external_reference': updated_order.external_reference,
+            'client': {
+                'id': str(updated_order.client.id),
+                'name': updated_order.client.name
+            },
+            'items': items_data,
+            'subtotal': float(updated_order.subtotal),
+            'shipping': shipping_data_response,
+            'shipping_price': float(shipping.final_price),
+            'total': float(updated_order.total),
+            'total_items': updated_order.total_items(),
+            'status': updated_order.status,
+            'active': updated_order.active,
+            'notes': updated_order.notes,
+            'created_at': updated_order.created_at.isoformat() if updated_order.created_at else None,
+            'updated_at': updated_order.updated_at.isoformat() if updated_order.updated_at else None,
+            'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
+        }
+    
     def _serialize_client(self, client: 'Client') -> Dict[str, Any]:
         """Serializa entidade Client para Dict"""
         address_data = {}

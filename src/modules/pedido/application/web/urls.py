@@ -5,7 +5,8 @@ from .views import (
     OrderConfirmView,
     OrderCancelView,
     OrderListByClientView,
-    OrderUpdateView
+    OrderUpdateView,
+    OrderAddShippingView
 )
 
 urlpatterns = [
@@ -26,5 +27,8 @@ urlpatterns = [
     
     # Listar pedidos do cliente
     path('my-orders/', OrderListByClientView.as_view(), name='order-list-client'),
+    
+    # Adicionar frete ao pedido
+    path('add-shipping/<str:order_id>/', OrderAddShippingView.as_view(), name='order-add-shipping'),
 ]
 

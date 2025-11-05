@@ -5,6 +5,7 @@ from modules.pedido.application.web.serializers import (
     CreateOrderSerializer,
     OrderDetailSerializer,
     UpdateOrderSerializer,
+    AddShippingToOrderSerializer,
 )
 from modules.pedido.domain.services.order_service import OrderService
 from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
@@ -153,12 +154,38 @@ class OrderDetailView(APIView):
                 for item in order.items
             ]
             
+            # Busca informações do frete se existir
+            shipping_data = None
+            shipping_price = None
+            from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+            try:
+                shipping = OrderShippingModel.objects.get(order_id=order.id)
+                shipping_data = {
+                    'service_id': shipping.service_id,
+                    'service_name': shipping.service_name,
+                    'price': float(shipping.price),
+                    'custom_price': float(shipping.custom_price) if shipping.custom_price else None,
+                    'final_price': float(shipping.final_price),
+                    'delivery_time': shipping.delivery_time,
+                    'custom_delivery_time': shipping.custom_delivery_time,
+                    'final_delivery_time': shipping.final_delivery_time,
+                    'currency': shipping.currency,
+                    'company': shipping.company,
+                    'from_postal_code': shipping.from_postal_code,
+                    'to_postal_code': shipping.to_postal_code
+                }
+                shipping_price = float(shipping.final_price)
+            except OrderShippingModel.DoesNotExist:
+                pass
+            
             serializer = OrderDetailSerializer({
                 'order_id': order.id,
                 'external_reference': order.external_reference,
                 'client': client_data,
                 'items': items_data,
                 'subtotal': float(order.subtotal),
+                'shipping': shipping_data,
+                'shipping_price': shipping_price,
                 'total': float(order.total),
                 'status': order.status,
                 'active': order.active,
@@ -320,6 +347,7 @@ class OrderListByClientView(APIView):
                 orders = [order for order in orders if order.status != 'CANCELLED']
             
             # Serializa os dados
+            from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
             data = []
             for order in orders:
                 # Prepara itens do pedido
@@ -334,11 +362,29 @@ class OrderListByClientView(APIView):
                     for item in order.items
                 ]
                 
+                # Busca informações do frete se existir
+                shipping_data = None
+                shipping_price = None
+                try:
+                    shipping = OrderShippingModel.objects.get(order_id=order.id)
+                    shipping_data = {
+                        'service_id': shipping.service_id,
+                        'service_name': shipping.service_name,
+                        'price': float(shipping.price),
+                        'final_price': float(shipping.final_price),
+                        'delivery_time': shipping.final_delivery_time,
+                    }
+                    shipping_price = float(shipping.final_price)
+                except OrderShippingModel.DoesNotExist:
+                    pass
+                
                 data.append({
                     'order_id': order.id,
                     'external_reference': order.external_reference,
                     'total': float(order.total),
                     'subtotal': float(order.subtotal),
+                    'shipping': shipping_data,
+                    'shipping_price': shipping_price,
                     'status': order.status,
                     'active': order.active,
                     'total_items': order.total_items(),
@@ -410,6 +456,100 @@ class OrderUpdateView(APIView):
         except (DatabaseError, IntegrityError) as e:
             return ErrorResponse.internal_server_error(
                 "Erro ao atualizar pedido no banco de dados", 
+                details=str(e)
+            )
+        except Exception as e:
+            return ErrorResponse.internal_server_error(
+                "Erro interno do servidor", 
+                details=str(e)
+            )
+
+
+class OrderAddShippingView(APIView):
+    """View para adicionar serviço de frete ao pedido"""
+    
+    def post(self, request, order_id):
+        """Adiciona um serviço de frete ao pedido"""
+        
+        # Autenticação
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return ErrorResponse.unauthorized("Token não informado")
+
+        token = auth_header.split(" ")[1]
+        user_service = UserService(UserRepository(), BlacklistRepository())
+        
+        try:
+            user_service.authenticate(token)
+        except ValueError as e:
+            return ErrorResponse.unauthorized(str(e))
+        
+        # Validação dos dados
+        serializer = AddShippingToOrderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return ErrorResponse.validation_error(serializer.errors)
+        
+        # Busca o pedido para obter o cliente e CEP de destino
+        order_service = OrderService(OrderRepository())
+        try:
+            order = order_service.get_order(order_id)
+            if not order:
+                return ErrorResponse.not_found("Pedido não encontrado ou inativo")
+        except Exception as e:
+            return ErrorResponse.internal_server_error(
+                "Erro ao buscar pedido",
+                details=str(e)
+            )
+        
+        # Busca o CEP de destino do endereço do cliente
+        if not order.client.address or not order.client.address.postal_code:
+            return ErrorResponse.bad_request(
+                "Cliente do pedido não possui endereço com CEP cadastrado. Por favor, atualize o endereço do cliente."
+            )
+        
+        to_postal_code = ''.join(filter(str.isdigit, order.client.address.postal_code))
+        if len(to_postal_code) != 8:
+            return ErrorResponse.bad_request(
+                f"CEP do cliente é inválido. Deve ter 8 dígitos. CEP encontrado: {to_postal_code[:10]}..."
+            )
+        
+        # Obtém CEP de origem: usa o enviado ou o do .env
+        validated_data = serializer.validated_data.copy()
+        from_postal_code = validated_data.get('from_postal_code')
+        if not from_postal_code:
+            from django.conf import settings
+            from_postal_code = getattr(settings, 'OWNER_CEP', None)
+            if not from_postal_code:
+                return ErrorResponse.bad_request(
+                    "CEP de origem não informado. Configure OWNER_CEP no .env ou envie from_postal_code na requisição."
+                )
+            # Remove formatação do CEP do .env
+            from_postal_code = ''.join(filter(str.isdigit, str(from_postal_code)))
+            if len(from_postal_code) != 8:
+                return ErrorResponse.bad_request(
+                    f"CEP de origem no .env (OWNER_CEP) é inválido. Deve ter 8 dígitos. Valor encontrado: {from_postal_code[:10]}..."
+                )
+        
+        validated_data['from_postal_code'] = from_postal_code
+        validated_data['to_postal_code'] = to_postal_code
+        
+        # Adiciona o frete ao pedido
+        try:
+            result = order_service.add_shipping_to_order(
+                order_id=order_id,
+                shipping_data=validated_data
+            )
+            
+            return SuccessResponse.ok(
+                data=result,
+                message="Frete adicionado ao pedido com sucesso"
+            )
+            
+        except ValueError as e:
+            return ErrorResponse.bad_request(str(e))
+        except (DatabaseError, IntegrityError) as e:
+            return ErrorResponse.internal_server_error(
+                "Erro ao adicionar frete ao pedido no banco de dados", 
                 details=str(e)
             )
         except Exception as e:

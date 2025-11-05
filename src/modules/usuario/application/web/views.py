@@ -4,11 +4,13 @@ from django.db import DatabaseError, IntegrityError
 from modules.usuario.application.web.serializers import (
     UserCreateSerializer,
     LoginSerializer,
+    UserUpdateSerializer,
 )
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
 from api_pagamento_frete.utils import ErrorResponse, SuccessResponse
+from django.db import DatabaseError, IntegrityError
 
 user_repository = UserRepository()
 blacklist_repository = BlacklistRepository()
@@ -79,3 +81,52 @@ class RefreshTokenView(APIView):
             return SuccessResponse.ok(data=result, message="Token atualizado com sucesso")
         except ValueError as e: 
             return ErrorResponse.unauthorized(str(e))
+
+class UpdateUserView(APIView):
+    """View para atualizar informações do usuário autenticado"""
+    
+    def put(self, request):
+        """Atualiza informações do usuário autenticado"""
+        
+        # Autenticação
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return ErrorResponse.unauthorized("Token não informado")
+        
+        token = auth_header.split(" ")[1]
+        
+        try:
+            payload = user_service.authenticate(token)
+            user_id = payload.get('user_id')
+        except ValueError as e:
+            return ErrorResponse.unauthorized(str(e))
+        
+        # Validação dos dados
+        serializer = UserUpdateSerializer(
+            data=request.data,
+            context={"user_service": user_service}
+        )
+        
+        if serializer.is_valid():
+            try:
+                user_data = serializer.update(user_id, serializer.validated_data)
+                return SuccessResponse.ok(
+                    data=user_data,
+                    message="Usuário atualizado com sucesso"
+                )
+            except (DatabaseError, IntegrityError) as e:
+                return ErrorResponse.internal_server_error(
+                    "Erro ao salvar usuário no banco de dados",
+                    details=str(e)
+                )
+            except Exception as e:
+                return ErrorResponse.internal_server_error(
+                    "Erro inesperado ao atualizar usuário",
+                    details=str(e)
+                )
+        
+        return ErrorResponse.validation_error(serializer.errors)
+    
+    def patch(self, request):
+        """Atualiza informações do usuário autenticado (método PATCH)"""
+        return self.put(request)

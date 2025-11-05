@@ -39,3 +39,18 @@ class UserRepository(IUserRepository):
             )
         except UserModel.DoesNotExist:
             return None
+    
+    def find_by_id(self, user_id: int):
+        try:
+            obj = UserModel.objects.get(id=user_id)
+            return User(
+                id=obj.id,
+                name=obj.name,
+                email=obj.email,
+                password=obj.password,
+                registration_date=obj.registration_date,
+                active=obj.active,
+                _is_hashed=True
+            )
+        except UserModel.DoesNotExist:
+            return None

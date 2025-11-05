@@ -6,6 +6,7 @@ from modules.usuario.domain.repositories.blacklist_repository import IBlacklistR
 
 import os 
 import redis 
+import logging
 from dotenv import load_dotenv 
 from django.db import transaction
 
@@ -145,3 +146,107 @@ class UserService:
             raise ValueError("Token revogado")
         
         return payload
+    
+    def update_user(self, user_id: int, name: str = None, password: str = None) -> dict:
+        """
+        Atualiza informações do usuário
+        Apenas os campos name e password podem ser atualizados
+        """
+        # Busca o usuário
+        user = self.user_repo.find_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado")
+        
+        # Atualiza apenas os campos fornecidos
+        updated_name = name if name is not None else user.name
+        updated_password = user.password  # Mantém a senha atual por padrão
+        
+        # Se senha foi fornecida, atualiza
+        if password:
+            # Valida a nova senha
+            User.validate_password(password)
+            # Cria nova instância com a nova senha para gerar o hash
+            temp_user = User(id=user.id, name=user.name, email=user.email, password=password)
+            updated_password = temp_user.password
+        
+        # Cria instância atualizada do usuário
+        # Mantém email e active originais (não podem ser alterados)
+        updated_user = User(
+            id=user.id,
+            name=updated_name,
+            email=user.email,  # Mantém o email original
+            password=updated_password,
+            registration_date=user.registration_date,
+            active=user.active,  # Mantém o status active original
+            _is_hashed=True
+        )
+        
+        # Salva com transação atômica
+        with transaction.atomic():
+            saved_user = self.user_repo.save(updated_user)
+        
+        # Se o nome foi alterado, atualiza também o cliente associado
+        if name is not None and name != user.name:
+            try:
+                # Importa repositórios e serviços de cliente
+                from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
+                from modules.cliente.adapters.external.asaas_client import AsaasClient
+                
+                client_repository = ClientRepository()
+                client = client_repository.get_by_user_id(str(user_id))
+                
+                if client:
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Atualizando cliente {client.id} - nome antigo: '{client.name}' -> novo: '{saved_user.name}'")
+                    
+                    # Atualiza o nome do cliente com o novo nome do usuário
+                    # Cria uma nova entidade com o nome atualizado, mantendo todos os outros campos
+                    from modules.cliente.domain.entities.client_entity import Client as ClientEntity
+                    from modules.usuario.adapters.persistence.models import User as UserModel
+                    
+                    # Busca o modelo Django User atualizado
+                    user_model = UserModel.objects.get(id=user_id)
+                    
+                    updated_client_entity = ClientEntity(
+                        id=client.id,
+                        name=saved_user.name,  # Novo nome do usuário
+                        cpf=client.cpf,
+                        phone=client.phone,
+                        mobile_phone=client.mobile_phone,
+                        address=client.address,
+                        user=user_model,  # Usa o modelo Django User atualizado
+                        registration_date=client.registration_date,
+                        active=client.active,
+                        asaas_id=client.asaas_id
+                    )
+                    
+                    # Atualiza no banco local
+                    client_repository.update(updated_client_entity)
+                    logger.info(f"Cliente atualizado no banco local: {updated_client_entity.name}")
+                    
+                    # Se o cliente tem ID no Asaas, atualiza também lá
+                    if updated_client_entity.asaas_id:
+                        try:
+                            asaas_client = AsaasClient()
+                            asaas_response = asaas_client.update_customer(updated_client_entity.asaas_id, updated_client_entity)
+                            logger.info(f"Cliente atualizado no Asaas (ID: {updated_client_entity.asaas_id}): {asaas_response}")
+                        except Exception as e:
+                            # Log do erro mas não interrompe a atualização do usuário
+                            # O nome já foi atualizado no banco local
+                            logger.error(f"Erro ao atualizar cliente no Asaas: {str(e)}", exc_info=True)
+                else:
+                    logger.warning(f"Cliente não encontrado para o usuário {user_id}")
+            except Exception as e:
+                # Log do erro mas não interrompe a atualização do usuário
+                # O nome já foi atualizado no banco local
+                logger = logging.getLogger(__name__)
+                logger.error(f"Erro ao atualizar cliente associado: {str(e)}", exc_info=True)
+        
+        return {
+            "user": {
+                "id": saved_user.id,
+                "name": saved_user.name,
+                "email": saved_user.email,
+                "active": saved_user.active
+            }
+        }

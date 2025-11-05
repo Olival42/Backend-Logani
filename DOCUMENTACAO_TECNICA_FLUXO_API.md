@@ -95,6 +95,7 @@ sequenceDiagram
     participant Cliente
     participant API
     participant PedidoService
+    participant FreteService
     participant CheckoutService
     participant AsaasAPI
     participant Webhook
@@ -105,9 +106,22 @@ sequenceDiagram
     PedidoService->>PedidoService: Validar itens e calcular total
     PedidoService->>PedidoService: Salvar pedido (PENDING)
     
-    API->>CheckoutService: create_checkout(order_id, payment_method, installments)
+    Cliente->>API: POST /shippings/calculate/ (opcional)
+    API->>FreteService: calculate_shipping(products, CEP)
+    FreteService-->>API: Retorna cotações de frete
+    API-->>Cliente: Lista de opções de frete
+    
+    Cliente->>API: POST /pedidos/add-shipping/{id}/ (opcional)
+    API->>PedidoService: add_shipping_to_order(shipping_data)
+    PedidoService->>PedidoService: Atualizar total do pedido (subtotal + frete)
+    
+    API->>CheckoutService: create_checkout(externalReference)
+    CheckoutService->>CheckoutService: Buscar pedido por externalReference
+    CheckoutService->>CheckoutService: Converter itens do pedido em itens do checkout
+    CheckoutService->>CheckoutService: Buscar frete do pedido (OrderShipping)
+    CheckoutService->>CheckoutService: Adicionar item de frete ao checkout
     CheckoutService->>ClienteService: Buscar cliente no Asaas
-    CheckoutService->>AsaasAPI: Criar cobrança
+    CheckoutService->>AsaasAPI: Criar cobrança com itens (produtos + frete)
     AsaasAPI-->>CheckoutService: Resposta com checkout_id e URL
     CheckoutService->>CheckoutService: Salvar checkout
     API-->>Cliente: Retorna URL do checkout
@@ -591,24 +605,44 @@ Response:
 
 #### Prioridade de Tokens
 
-1. **Token do `.env`** (`ACESS_TOKEN_MELHOR_ENVIO`): Prioridade máxima, usado quando configurado
-2. **Token OAuth do Banco**: Token gerado via OAuth e salvo no banco de dados
-3. **Renovação Automática**: Tokens OAuth são renovados automaticamente quando expirados (se tiverem refresh_token)
+1. **Token OAuth do Banco**: Token gerado via OAuth e salvo no banco de dados (prioridade máxima)
+   - Se o token existir no banco e não estiver expirado, será usado
+   - Tokens OAuth são renovados automaticamente quando expirados (se tiverem refresh_token)
+2. **Token do `.env`** (`ACESS_TOKEN_MELHOR_ENVIO`): Fallback quando não há token no banco
+   - Usado apenas se não existir token no banco de dados ou se o token do banco estiver expirado
+   - Útil para testes rápidos ou configuração inicial
 
 #### Ciclo de Vida do Token
 
 ```python
+class TokenRepositoryDjango:
+    def get_latest(self) -> Optional[Token]:
+        # 1. Primeiro tenta buscar do banco de dados
+        try:
+            model = MelhorEnvioTokenModel.objects.latest('created_at')
+            if not model.is_expired():
+                return Token(...)  # Retorna token do banco
+        except MelhorEnvioTokenModel.DoesNotExist:
+            pass
+        
+        # 2. Se não encontrou no banco, busca do .env (fallback)
+        token_env = os.getenv('ACESS_TOKEN_MELHOR_ENVIO')
+        if token_env:
+            return Token(...)  # Retorna token do .env
+        
+        return None
+
 class MelhorEnvioAuthService:
     def get_valid_token(self) -> Optional[Token]:
-        # 1. Busca token (prioriza .env)
+        # 1. Busca token (prioriza banco, depois .env)
         token = self.token_repository.get_latest()
         
-        # 2. Se token do .env, retorna (sempre válido)
-        if not token.refresh_token:
+        # 2. Se token do .env (sem refresh_token), retorna (sempre válido)
+        if token and not token.refresh_token:
             return token
         
         # 3. Se token OAuth expirado, renova automaticamente
-        if token.is_expired():
+        if token and token.is_expired():
             token = self.refresh_access_token()
         
         return token
@@ -760,7 +794,8 @@ MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
 MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
 MELHOR_ENVIO_ENVIRONMENT=sandbox  # ou production
 
-# Token Manual (opcional - para testes rápidos)
+# Token Manual (opcional - usado apenas como fallback quando não há token no banco)
+# Prioridade: 1) Token OAuth do banco de dados, 2) Token do .env (fallback)
 ACESS_TOKEN_MELHOR_ENVIO=seu_token_aqui
 
 # CEP de origem (obrigatório para cálculos)
@@ -912,6 +947,24 @@ CREATE TABLE order_items (
     unit_price DECIMAL(10,2),
     total_price DECIMAL(10,2)
 );
+
+-- Frete do pedido (OneToOne - um pedido tem apenas um frete escolhido)
+CREATE TABLE order_shipping (
+    id UUID PRIMARY KEY,
+    order_id UUID UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+    service_id INTEGER, -- ID do serviço no Melhor Envio
+    service_name VARCHAR(255),
+    price DECIMAL(10,2),
+    custom_price DECIMAL(10,2), -- Preço customizado (se aplicável)
+    delivery_time INTEGER, -- Prazo de entrega em dias
+    custom_delivery_time INTEGER, -- Prazo customizado (se aplicável)
+    currency VARCHAR(3) DEFAULT 'BRL',
+    company JSONB, -- Informações da transportadora (nome, id, picture, etc)
+    from_postal_code VARCHAR(8),
+    to_postal_code VARCHAR(8),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
 ```
 
 ### Modelo de Pagamento (Payment)
@@ -967,9 +1020,54 @@ POST /usuarios/logout/
 ```
 POST   /pedidos/create/           # Criar pedido
 GET    /pedidos/detail/{id}/      # Detalhes do pedido
+POST   /pedidos/update/{id}/      # Atualizar itens do pedido
 POST   /pedidos/confirm/{id}/     # Confirmar pedido
 POST   /pedidos/cancel/{id}/      # Cancelar pedido
 GET    /pedidos/my-orders/        # Listar pedidos do cliente
+POST   /pedidos/add-shipping/{id}/ # Adicionar frete ao pedido
+```
+
+#### Adicionar Frete ao Pedido
+
+```
+POST /pedidos/add-shipping/{order_id}/
+Content-Type: application/json
+
+{
+  "service_id": 1,
+  "service_name": "PAC",
+  "price": 46.02,
+  "custom_price": 46.02,  // opcional
+  "delivery_time": 8,
+  "custom_delivery_time": 8,  // opcional
+  "currency": "BRL",
+  "company": {  // opcional
+    "id": 1,
+    "name": "Correios",
+    "picture": "https://..."
+  },
+  "from_postal_code": "96020360",
+  "to_postal_code": "01018020"
+}
+
+Response:
+{
+  "order_id": "...",
+  "external_reference": "ORD_...",
+  "subtotal": 50.00,
+  "shipping": {
+    "service_id": 1,
+    "service_name": "PAC",
+    "price": 46.02,
+    "final_price": 46.02,
+    "delivery_time": 8,
+    "final_delivery_time": 8,
+    "company": {...}
+  },
+  "shipping_price": 46.02,
+  "total": 96.02,  // subtotal + frete
+  ...
+}
 ```
 
 ### Checkout
@@ -977,6 +1075,65 @@ GET    /pedidos/my-orders/        # Listar pedidos do cliente
 ```
 POST   /checkout/create/          # Criar checkout
 GET    /checkout/{id}/            # Detalhes do checkout
+POST   /checkout/{id}/cancel/     # Cancelar checkout
+POST   /checkout/{id}/sync/       # Sincronizar status com Asaas
+GET    /checkout/list/            # Listar checkouts
+```
+
+#### Criação de Checkout com Pedido e Frete
+
+Quando um checkout é criado a partir de um pedido (usando `externalReference`), o sistema:
+
+1. **Busca os itens do pedido**: Converte cada item do pedido em um item do checkout
+2. **Busca informações do frete**: Se o pedido tiver um serviço de frete associado (`OrderShipping`)
+3. **Adiciona item de frete**: Cria um item adicional no checkout com:
+   - **Nome**: `"Frete - {service_name} - {company_name}"` (se disponível)
+   - **Valor**: Preço final do frete (`final_price`)
+   - **Quantidade**: 1
+   - **External Reference**: `"SHIPPING_{service_id}"`
+   - **Imagem**: Imagem mockada de frete (constante `SHIPPING_ITEM_IMAGE_BASE64`)
+
+**Exemplo de Request**:
+```json
+{
+  "externalReference": "ORD_20251101203654_0A38230E",
+  "customer": "cus_123456789",
+  "chargeTypes": ["DETACHED", "INSTALLMENT"],
+  "minutesToExpire": 60,
+  "callback": {
+    "successUrl": "https://seusite.com/sucesso",
+    "cancelUrl": "https://seusite.com/falha",
+    "expiredUrl": "https://seusite.com/expirado"
+  },
+  "paymentMethods": ["PIX", "CREDIT_CARD"],
+  "installment": {
+    "maxInstallmentCount": 5
+  }
+}
+```
+
+**Exemplo de Response** (itens do checkout):
+```json
+{
+  "items": [
+    {
+      "name": "Produto A",
+      "value": 25.00,
+      "quantity": 2,
+      "externalReference": "prod_123",
+      "imageBase64": "..."
+    },
+    {
+      "name": "Frete - PAC - Correios",
+      "value": 46.02,
+      "quantity": 1,
+      "externalReference": "SHIPPING_1",
+      "imageBase64": "..."
+    }
+  ],
+  "value": 96.02,
+  "checkout_url": "https://..."
+}
 ```
 
 ### Cliente
@@ -1201,7 +1358,7 @@ services:
 
 ## Versionamento
 
-### Versão Atual: 1.1.0
+### Versão Atual: 1.2.0
 
 - Sistema completo de pedidos
 - Integração com Asaas
@@ -1215,6 +1372,9 @@ services:
 - **Autenticação OAuth 2.0 com Melhor Envio**
 - **Gestão automática de tokens OAuth com renovação**
 - **Cálculo de frete por produtos com múltiplas opções**
+- **Checkout com item de frete automático**: Quando um checkout é criado a partir de um pedido, o sistema inclui automaticamente o item de frete como último item do checkout
+- **Prioridade de tokens invertida**: Tokens OAuth do banco de dados têm prioridade sobre tokens do `.env` (fallback para `.env` apenas quando não há token no banco)
+- **Nome do frete no checkout**: Inclui nome do serviço e nome da transportadora (company.name) quando disponível
 
 ---
 

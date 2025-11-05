@@ -17,12 +17,13 @@ Construído com Python e Django seguindo princípios de **Clean Architecture** e
 - 👥 **Gestão de Clientes:** CRUD completo + sincronização automática com Asaas
 - 📦 **Gestão de Pedidos:** Criação, consulta, cancelamento e rastreamento de status
 - 💳 **Checkout Completo:** Geração de links de pagamento PIX e Cartão de Crédito
+- 🚚 **Checkout com Frete Automático:** Inclusão automática do item de frete no checkout quando o pedido possui frete
 - 💰 **Pagamentos Parcelados:** Suporte a até 12 parcelas com gestão automática
 - 🔔 **Webhooks Inteligentes:** Processamento automático de notificações de pagamento
 - ↩️ **Estorno Automático:** Cancelamento de pedidos com estorno automático
 - 📧 **Emails Assíncronos:** Notificações por email (Celery) - performance otimizada
 - 🚚 **Cálculo de Frete:** Integração com Melhor Envio para cálculo de frete por produtos
-- 🔑 **OAuth 2.0 Melhor Envio:** Autenticação OAuth com renovação automática de tokens
+- 🔑 **OAuth 2.0 Melhor Envio:** Autenticação OAuth com renovação automática de tokens (prioridade sobre token manual)
 - 🏗️ **Arquitetura Limpa:** Clean Architecture + DDD + Repository Pattern
 
 ## 🛠️ Tecnologias
@@ -102,7 +103,13 @@ A API integra com o Melhor Envio para cálculo de frete. A autenticação utiliz
 3. **Callback automático**: O sistema recebe o código e salva o token automaticamente
 4. **Uso**: O token é usado automaticamente para cálculos de frete
 
+**Prioridade de Tokens:**
+- **1º**: Token OAuth do banco de dados (prioridade máxima)
+- **2º**: Token do `.env` (`ACESS_TOKEN_MELHOR_ENVIO`) - usado apenas como fallback quando não há token no banco
+
 **Produtos mockados**: O frontend envia apenas IDs e quantidades. Os produtos são buscados automaticamente do repositório mockado.
+
+**Checkout com Frete**: Quando um checkout é criado a partir de um pedido que possui frete, o sistema inclui automaticamente o item de frete como último item do checkout, com nome do serviço e transportadora.
 
 Veja mais detalhes na [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md#integração-com-melhor-envio).
 
@@ -186,7 +193,7 @@ MELHOR_ENVIO_CLIENT_ID=seu_client_id_aqui
 MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
 MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
 MELHOR_ENVIO_ENVIRONMENT=sandbox  # ou production
-ACESS_TOKEN_MELHOR_ENVIO=seu_token_manual_aqui  # opcional (para testes)
+ACESS_TOKEN_MELHOR_ENVIO=seu_token_manual_aqui  # opcional (fallback quando não há token no banco)
 OWNER_CEP=96020360  # CEP de origem para cálculos (obrigatório)
 
 # Email (obrigatório para notificações de pedidos)
@@ -233,12 +240,18 @@ DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
 ### Pedidos
 - `POST /pedidos/create/` - Criar pedido
 - `GET /pedidos/detail/{id}/` - Detalhes do pedido
+- `POST /pedidos/update/{id}/` - Atualizar itens do pedido
+- `POST /pedidos/confirm/{id}/` - Confirmar pedido
 - `POST /pedidos/cancel/{id}/` - Cancelar pedido
 - `GET /pedidos/my-orders/` - Listar pedidos do cliente
+- `POST /pedidos/add-shipping/{id}/` - Adicionar frete ao pedido
 
 ### Checkout
-- `POST /checkout/create/` - Criar checkout de pagamento
+- `POST /checkout/create/` - Criar checkout de pagamento (inclui item de frete automaticamente se o pedido tiver frete)
 - `GET /checkout/{id}/` - Detalhes do checkout
+- `POST /checkout/{id}/cancel/` - Cancelar checkout
+- `POST /checkout/{id}/sync/` - Sincronizar status com Asaas
+- `GET /checkout/list/` - Listar checkouts
 
 ### Webhooks
 - `POST /webhook/asaas/` - Receber notificações do Asaas
@@ -379,19 +392,7 @@ curl -X POST http://localhost:8000/api/pedidos/create/ \
   }'
 ```
 
-### 5. Criar Checkout PIX
-```bash
-curl -X POST http://localhost:8000/api/checkout/create/ \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer SEU_TOKEN" \
-  -d '{
-    "order_id": "uuid-do-pedido",
-    "payment_method": "PIX",
-    "installments": 1
-  }'
-```
-
-### 6. Calcular Frete
+### 5. Calcular Frete
 ```bash
 curl -X POST http://localhost:8000/api/shippings/calculate/ \
   -H "Content-Type: application/json" \
@@ -411,7 +412,41 @@ curl -X POST http://localhost:8000/api/shippings/calculate/ \
   }'
 ```
 
-### 7. Obter URL de Autorização OAuth (Melhor Envio)
+### 6. Adicionar Frete ao Pedido
+```bash
+curl -X POST http://localhost:8000/api/pedidos/add-shipping/{order_id}/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "service_id": 1,
+    "service_name": "PAC",
+    "price": 46.02,
+    "delivery_time": 8,
+    "company": {
+      "id": 1,
+      "name": "Correios"
+    },
+    "from_postal_code": "96020360",
+    "to_postal_code": "01018020"
+  }'
+```
+
+### 7. Criar Checkout (com frete automático)
+```bash
+# Quando criar checkout usando externalReference, o frete é incluído automaticamente
+curl -X POST http://localhost:8000/api/checkout/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "externalReference": "ORD_20251101203654_0A38230E",
+    "customer": "cus_123456789",
+    "chargeTypes": ["DETACHED", "INSTALLMENT"],
+    "minutesToExpire": 60,
+    "paymentMethods": ["PIX", "CREDIT_CARD"]
+  }'
+```
+
+### 8. Obter URL de Autorização OAuth (Melhor Envio)
 ```bash
 curl -X GET http://localhost:8000/api/shippings/auth/url/ \
   -H "Authorization: Bearer SEU_TOKEN"
@@ -463,8 +498,9 @@ docker-compose up -d
 - Considere escalar workers do Celery se necessário
 
 ### Erro: "Token inválido ou expirado" no cálculo de frete
-- Verifique se o token do Melhor Envio está configurado no `.env` (`ACESS_TOKEN_MELHOR_ENVIO`)
-- Ou autentique via OAuth: `GET /shippings/auth/url/` → autorize → callback
+- **Prioridade**: O sistema primeiro busca token OAuth do banco de dados, depois do `.env` (fallback)
+- Autentique via OAuth para obter token no banco: `GET /shippings/auth/url/` → autorize → callback
+- Ou configure token manual no `.env` (`ACESS_TOKEN_MELHOR_ENVIO`) como fallback
 - Verifique status do token: `GET /shippings/auth/status/`
 
 ### Erro: "invalid_client" ao autenticar com Melhor Envio

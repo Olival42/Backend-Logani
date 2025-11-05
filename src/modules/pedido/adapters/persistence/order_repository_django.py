@@ -28,7 +28,8 @@ class OrderRepository(IOrderRepository):
             status=order.status,
             external_reference=order.external_reference,
             notes=order.notes,
-            confirmed_at=order.confirmed_at
+            confirmed_at=order.confirmed_at,
+            active=order.active
         )
         
         # Cria os itens
@@ -50,31 +51,40 @@ class OrderRepository(IOrderRepository):
         return self._model_to_entity(saved_order_model)
     
     def get_by_id(self, order_id: str) -> Optional[OrderEntity]:
-        """Busca um pedido por ID"""
+        """Busca um pedido por ID (apenas se estiver ativo)"""
         try:
-            order_model = OrderModel.objects.prefetch_related('items').get(id=order_id)
+            order_model = OrderModel.objects.prefetch_related('items').get(id=order_id, active=True)
             return self._model_to_entity(order_model)
         except OrderModel.DoesNotExist:
             return None
     
     def get_by_client(self, client_id: str) -> List[OrderEntity]:
-        """Busca pedidos de um cliente"""
-        order_models = OrderModel.objects.filter(client_id=client_id).prefetch_related('items')
+        """Busca pedidos ativos de um cliente"""
+        order_models = OrderModel.objects.filter(client_id=client_id, active=True).prefetch_related('items')
         return [self._model_to_entity(model) for model in order_models]
     
-    def get_by_external_reference(self, external_reference: str) -> Optional[OrderEntity]:
-        """Busca um pedido por referência externa"""
+    def get_by_external_reference(self, external_reference: str, include_inactive: bool = False) -> Optional[OrderEntity]:
+        """
+        Busca um pedido por referência externa
+        
+        Args:
+            external_reference: Referência externa do pedido
+            include_inactive: Se True, busca mesmo se inativo (útil para webhooks)
+        """
         try:
-            order_model = OrderModel.objects.prefetch_related('items').get(
+            query = OrderModel.objects.prefetch_related('items').filter(
                 external_reference=external_reference
             )
+            if not include_inactive:
+                query = query.filter(active=True)
+            order_model = query.get()
             return self._model_to_entity(order_model)
         except OrderModel.DoesNotExist:
             return None
     
     def get_by_status(self, status: str) -> List[OrderEntity]:
-        """Busca pedidos por status"""
-        order_models = OrderModel.objects.filter(status=status).prefetch_related('items')
+        """Busca pedidos ativos por status"""
+        order_models = OrderModel.objects.filter(status=status, active=True).prefetch_related('items')
         return [self._model_to_entity(model) for model in order_models]
     
     def update(self, order: OrderEntity) -> OrderEntity:
@@ -102,6 +112,7 @@ class OrderRepository(IOrderRepository):
         order_model.notes = order.notes
         order_model.subtotal = order.subtotal
         order_model.total = order.total
+        order_model.active = order.active
         
         order_model.save()
         
@@ -110,8 +121,8 @@ class OrderRepository(IOrderRepository):
         return self._model_to_entity(updated_order_model)
     
     def list_all(self) -> List[OrderEntity]:
-        """Lista todos os pedidos"""
-        order_models = OrderModel.objects.all().prefetch_related('items')
+        """Lista todos os pedidos ativos"""
+        order_models = OrderModel.objects.filter(active=True).prefetch_related('items')
         return [self._model_to_entity(model) for model in order_models]
     
     def _model_to_entity(self, model: OrderModel) -> OrderEntity:
@@ -174,6 +185,7 @@ class OrderRepository(IOrderRepository):
             notes=model.notes,
             created_at=model.created_at,
             updated_at=model.updated_at,
-            confirmed_at=model.confirmed_at
+            confirmed_at=model.confirmed_at,
+            active=model.active
         )
 

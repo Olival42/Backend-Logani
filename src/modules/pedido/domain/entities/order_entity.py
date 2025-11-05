@@ -44,7 +44,8 @@ class Order:
         notes: Optional[str] = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
-        confirmed_at: Optional[datetime] = None
+        confirmed_at: Optional[datetime] = None,
+        active: bool = True
     ):
         self.id = id
         self.client = client
@@ -57,6 +58,7 @@ class Order:
         self.created_at = created_at or datetime.now(timezone.utc)
         self.updated_at = updated_at
         self.confirmed_at = confirmed_at
+        self.active = active
     
     def __repr__(self):
         return f"<Order {self.external_reference or self.id} - {self.client.name} - R$ {self.total}>"
@@ -135,4 +137,13 @@ class Order:
     def total_items(self) -> int:
         """Retorna a quantidade total de itens"""
         return sum(item.quantity for item in self.items)
+    
+    def mark_as_inactive(self):
+        """Marca o pedido como inativo"""
+        self.active = False
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def is_active(self) -> bool:
+        """Verifica se o pedido está ativo"""
+        return self.active
 

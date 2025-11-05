@@ -91,6 +91,12 @@ class Order(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     confirmed_at = models.DateTimeField(blank=True, null=True, help_text="Data de confirmação")
     
+    # Ativo/Inativo
+    active = models.BooleanField(
+        default=True,
+        help_text="Indica se o pedido está ativo. Pedidos sem itens são marcados como inativos."
+    )
+    
     class Meta:
         db_table = "orders"
         ordering = ['-created_at']

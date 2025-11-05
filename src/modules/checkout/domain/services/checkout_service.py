@@ -160,9 +160,14 @@ class CheckoutService:
                         try:
                             order = self.order_repository.get_by_external_reference(externalReference)
                             if order:
+                                # Verifica se o pedido está ativo
+                                if not order.active:
+                                    raise ValueError("Não é possível criar checkout para um pedido inativo")
                                 order_id = order.id
+                        except ValueError:
+                            raise  # Re-lança ValueError (erro de pedido inativo)
                         except:
-                            pass
+                            pass  # Ignora outros erros (pedido não encontrado, etc)
                     
                     # Cria o Payment se o repositório estiver disponível
                     if self.payment_repository:

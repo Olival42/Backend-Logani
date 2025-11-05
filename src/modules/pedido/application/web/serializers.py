@@ -83,6 +83,7 @@ class OrderResponseSerializer(serializers.Serializer):
     total = serializers.DecimalField(max_digits=10, decimal_places=2)
     total_items = serializers.IntegerField()
     status = serializers.CharField()
+    active = serializers.BooleanField(help_text="Indica se o pedido está ativo")
     notes = serializers.CharField(allow_null=True)
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField(allow_null=True)
@@ -103,6 +104,7 @@ class OrderDetailSerializer(serializers.Serializer):
     total = serializers.DecimalField(max_digits=10, decimal_places=2)
     
     status = serializers.CharField()
+    active = serializers.BooleanField(help_text="Indica se o pedido está ativo")
     notes = serializers.CharField(allow_null=True)
     
     created_at = serializers.DateTimeField()

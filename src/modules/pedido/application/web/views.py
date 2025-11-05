@@ -127,13 +127,13 @@ class OrderDetailView(APIView):
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
         
-        # Busca o pedido
+        # Busca o pedido (apenas ativos - filtrado automaticamente pelo repositório)
         order_service = OrderService(OrderRepository())
         try:
             order = order_service.get_order(order_id)
             
             if not order:
-                return ErrorResponse.not_found("Pedido não encontrado")
+                return ErrorResponse.not_found("Pedido não encontrado ou inativo")
             
             # Prepara dados do cliente (apenas id e name)
             client_data = {
@@ -161,6 +161,7 @@ class OrderDetailView(APIView):
                 'subtotal': float(order.subtotal),
                 'total': float(order.total),
                 'status': order.status,
+                'active': order.active,
                 'notes': order.notes,
                 'created_at': order.created_at,
                 'updated_at': order.updated_at,
@@ -339,6 +340,7 @@ class OrderListByClientView(APIView):
                     'total': float(order.total),
                     'subtotal': float(order.subtotal),
                     'status': order.status,
+                    'active': order.active,
                     'total_items': order.total_items(),
                     'items': items_data,
                     'created_at': order.created_at.isoformat() if order.created_at else None,

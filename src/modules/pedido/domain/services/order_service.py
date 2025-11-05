@@ -124,6 +124,7 @@ class OrderService:
             'total': float(saved_order.total),
             'total_items': saved_order.total_items(),
             'status': saved_order.status,
+            'active': saved_order.active,
             'notes': saved_order.notes,
             'created_at': saved_order.created_at.isoformat() if saved_order.created_at else None,
             'updated_at': saved_order.updated_at.isoformat() if saved_order.updated_at else None,
@@ -185,6 +186,10 @@ class OrderService:
         order = self.order_repository.get_by_id(order_id)
         if not order:
             raise ValueError("Pedido não encontrado")
+        
+        # Verifica se o pedido está ativo
+        if not order.active:
+            raise ValueError("Não é possível cancelar um pedido inativo")
         
         # Verifica se o pedido pode ser cancelado (incluindo verificação de prazo)
         days_to_cancel = getattr(settings, 'DAYS_TO_CANCEL', 2)
@@ -411,19 +416,23 @@ class OrderService:
                 
                 updated_items.remove(item_to_remove)
         
-        # Valida que sobrou pelo menos um item
+        # Se todos os itens foram removidos, marca pedido como inativo
         if not updated_items:
-            raise ValueError("Pedido deve ter pelo menos um item após a atualização")
+            order.items = []
+            order.subtotal = Decimal('0')
+            order.total = Decimal('0')
+            order.mark_as_inactive()
+        else:
+            # Recalcula subtotal e total
+            subtotal = Decimal('0')
+            for item in updated_items:
+                subtotal += item.total_price
+            
+            # Atualiza o pedido com os novos itens
+            order.items = updated_items
+            order.subtotal = subtotal
+            order.total = subtotal
         
-        # Recalcula subtotal e total
-        subtotal = Decimal('0')
-        for item in updated_items:
-            subtotal += item.total_price
-        
-        # Atualiza o pedido com os novos itens
-        order.items = updated_items
-        order.subtotal = subtotal
-        order.total = subtotal
         order.updated_at = datetime.now(timezone.utc)
         
         # Salva com transação atômica
@@ -442,7 +451,7 @@ class OrderService:
             for item in updated_order.items
         ]
         
-        return {
+        result = {
             'order_id': str(updated_order.id),
             'external_reference': updated_order.external_reference,
             'client': {
@@ -454,11 +463,18 @@ class OrderService:
             'total': float(updated_order.total),
             'total_items': updated_order.total_items(),
             'status': updated_order.status,
+            'active': updated_order.active,
             'notes': updated_order.notes,
             'created_at': updated_order.created_at.isoformat() if updated_order.created_at else None,
             'updated_at': updated_order.updated_at.isoformat() if updated_order.updated_at else None,
             'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
         }
+        
+        # Se o pedido foi inativado, adiciona mensagem informativa
+        if not updated_order.active:
+            result['message'] = 'Pedido marcado como inativo porque todos os itens foram removidos'
+        
+        return result
     
     def _serialize_order(self, order: Order) -> Dict[str, Any]:
         """Serializa entidade Order para Dict"""

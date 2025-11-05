@@ -88,6 +88,12 @@ class CheckoutCreateView(APIView):
                         f"Pedido com external_reference '{validated_data['externalReference']}' não encontrado"
                     )
                 
+                # Verifica se o pedido está ativo
+                if not order.active:
+                    return ErrorResponse.bad_request(
+                        "Não é possível criar checkout para um pedido inativo"
+                    )
+                
                 # Busca dados dos produtos e monta os itens
                 checkout_items = []
                 for item in order.items:

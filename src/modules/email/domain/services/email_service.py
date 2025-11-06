@@ -7,6 +7,7 @@ from django.core.mail import send_mail
 from django.conf import settings
 from datetime import datetime, timezone
 import pytz
+import os
 from modules.pedido.domain.entities.order_entity import Order
 from modules.cliente.domain.entities.client_entity import Client
 
@@ -520,4 +521,95 @@ Atenciosamente,
 Equipe de Atendimento
 """
         
+        return message
+    
+    def send_password_reset_email(self, user_email: str, user_name: str, reset_token: str, reset_url: str = None) -> bool:
+        """
+        Envia email com link para reset de senha
+        
+        Args:
+            user_email: Email do usuário
+            user_name: Nome do usuário
+            reset_token: Token de reset de senha
+            reset_url: URL completa para reset (opcional, será construída se não fornecida)
+            
+        Returns:
+            bool: True se o email foi enviado com sucesso
+        """
+        try:
+            # Se não foi fornecida uma URL, constrói uma padrão
+            if not reset_url:
+                # Pega a URL base do frontend ou usa uma padrão
+                frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+                reset_url = f"{frontend_url}/reset-password?token={reset_token}"
+            
+            subject = "Redefinição de Senha"
+            
+            # Monta o corpo do email
+            message = self._build_password_reset_message(user_name, reset_url, reset_token)
+            
+            # Envia o email
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user_email],
+                fail_silently=False,
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"Erro ao enviar email de reset de senha: {e}")
+            return False
+    
+    def _build_password_reset_message(self, user_name: str, reset_url: str, reset_token: str) -> str:
+        """
+        Monta a mensagem do email de reset de senha
+        
+        Args:
+            user_name: Nome do usuário
+            reset_url: URL completa para reset
+            reset_token: Token de reset (para caso o usuário precise copiar manualmente)
+            
+        Returns:
+            str: Mensagem formatada para o email
+        """
+        message = f"""
+Olá {user_name},
+
+Você solicitou a redefinição de senha da sua conta.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REDEFINIR SENHA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Clique no link abaixo para redefinir sua senha:
+
+{reset_url}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Este link expira em 1 hora
+✓ O link pode ser usado apenas uma vez
+✓ Se você não solicitou esta redefinição, ignore este email
+✓ Sua senha não será alterada até que você clique no link e defina uma nova senha
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SE O LINK NÃO FUNCIONAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Se o link acima não funcionar, você pode copiar e colar o token abaixo na página de reset de senha:
+
+Token: {reset_token}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Se você não solicitou esta redefinição, pode ignorar este email com segurança.
+
+Atenciosamente,
+Equipe de Suporte
+"""
         return message

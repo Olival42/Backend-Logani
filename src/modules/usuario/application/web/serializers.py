@@ -179,3 +179,47 @@ class UserUpdateSerializer(serializers.Serializer):
                     "detail": f"Erro inesperado ao atualizar usuário: {str(e)}"
                 }
             })
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo email é obrigatório.",
+            "blank": "O campo email é obrigatório.",
+            "invalid": "Email inválido."
+        }
+    )
+    
+    def validate_email(self, value):
+        """Valida o formato do email usando a validação da entidade User"""
+        try:
+            return User.validate_email(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
+class ResetPasswordSerializer(serializers.Serializer):
+    token = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        error_messages={
+            "required": "O campo token é obrigatório.",
+            "blank": "O campo token é obrigatório."
+        }
+    )
+    password = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        write_only=True,
+        error_messages={
+            "required": "O campo senha é obrigatório.",
+            "blank": "O campo senha é obrigatório."
+        }
+    )
+    
+    def validate_password(self, value):
+        """Valida a senha usando a validação da entidade User"""
+        try:
+            return User.validate_password(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))

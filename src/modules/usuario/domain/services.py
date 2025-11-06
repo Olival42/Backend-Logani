@@ -3,12 +3,17 @@ from modules.usuario.domain.repositories.user_repository import IUserRepository
 from modules.usuario.domain.utils.jwt_utils import Jwt_Utils
 
 from modules.usuario.domain.repositories.blacklist_repository import IBlacklistRepository
+from modules.usuario.domain.repositories.password_reset_repository import IPasswordResetRepository
 
 import os 
 import redis 
 import logging
+import secrets
+import hashlib
 from dotenv import load_dotenv 
 from django.db import transaction
+from django.utils import timezone
+from datetime import timedelta
 
 load_dotenv() 
 
@@ -21,10 +26,15 @@ r = redis.Redis(host=str(REDIS_HOST), port=int(REDIS_PORT), db=int(REDIS_DB))
 MAX_LOGIN_ATTEMPTS = int(os.getenv("MAX_LOGIN_ATTEMPTS")) 
 LOCK_TIME_SECONDS = int(os.getenv("LOCK_TIME_SECONDS"))
 
+# Configurações para reset de senha
+PASSWORD_RESET_TOKEN_EXPIRE_HOURS = int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRE_HOURS", "1"))
+MAX_PASSWORD_RESET_REQUESTS_PER_HOUR = int(os.getenv("MAX_PASSWORD_RESET_REQUESTS_PER_HOUR", "3"))
+
 class UserService:
-    def __init__(self, user_repo: IUserRepository, blacklist_repo: IBlacklistRepository):
+    def __init__(self, user_repo: IUserRepository, blacklist_repo: IBlacklistRepository, password_reset_repo: IPasswordResetRepository = None):
         self.user_repo = user_repo
         self.blacklist_repo = blacklist_repo
+        self.password_reset_repo = password_reset_repo
 
     def create_user(self, name: str, email: str, password: str) -> User:
         if self.user_repo.find_by_email(email):
@@ -249,4 +259,118 @@ class UserService:
                 "email": saved_user.email,
                 "active": saved_user.active
             }
+        }
+    
+    def request_password_reset(self, email: str) -> dict:
+        """
+        Solicita reset de senha para um email
+        Implementa rate limiting e não revela se o email existe
+        """
+        if not self.password_reset_repo:
+            raise ValueError("Password reset repository não configurado")
+        
+        # Busca o usuário (sem revelar se existe ou não)
+        user = self.user_repo.find_by_email(email)
+        
+        # Se o usuário não existe, retorna sucesso mesmo assim (para não revelar emails)
+        if not user:
+            # Retorna sucesso mas não envia email
+            return {
+                "message": "Se o email estiver cadastrado, você receberá um link para resetar sua senha"
+            }
+        
+        # Verifica se o usuário está ativo
+        if not user.active:
+            # Retorna sucesso mesmo assim para não revelar que a conta está inativa
+            return {
+                "message": "Se o email estiver cadastrado, você receberá um link para resetar sua senha"
+            }
+        
+        # Rate limiting: verifica quantas requisições foram feitas na última hora
+        recent_requests = self.password_reset_repo.count_recent_requests(
+            user.id, 
+            minutes=60
+        )
+        
+        if recent_requests >= MAX_PASSWORD_RESET_REQUESTS_PER_HOUR:
+            # Retorna sucesso mesmo assim para não revelar o rate limit
+            return {
+                "message": "Se o email estiver cadastrado, você receberá um link para resetar sua senha"
+            }
+        
+        # Invalida tokens anteriores do usuário
+        self.password_reset_repo.invalidate_user_tokens(user.id)
+        
+        # Gera token seguro
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        # Define expiração
+        expires_at = timezone.now() + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRE_HOURS)
+        
+        # Salva o token
+        with transaction.atomic():
+            self.password_reset_repo.save_token(user.id, token_hash, expires_at)
+        
+        # Retorna o token (será usado para enviar o email)
+        return {
+            "message": "Se o email estiver cadastrado, você receberá um link para resetar sua senha",
+            "token": token,  # Token será usado apenas para enviar o email
+            "user_email": user.email,
+            "user_name": user.name
+        }
+    
+    def reset_password(self, token: str, new_password: str) -> dict:
+        """
+        Reseta a senha usando um token válido
+        """
+        if not self.password_reset_repo:
+            raise ValueError("Password reset repository não configurado")
+        
+        # Valida a nova senha
+        User.validate_password(new_password)
+        
+        # Hash do token para buscar no banco
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        # Busca o token
+        token_data = self.password_reset_repo.find_by_token_hash(token_hash)
+        
+        if not token_data:
+            raise ValueError("Token inválido ou expirado")
+        
+        # Verifica se o token é válido
+        if not token_data['is_valid']:
+            raise ValueError("Token inválido ou expirado")
+        
+        # Busca o usuário
+        user = self.user_repo.find_by_id(token_data['user_id'])
+        if not user:
+            raise ValueError("Usuário não encontrado")
+        
+        # Atualiza a senha
+        with transaction.atomic():
+            # Marca o token como usado
+            self.password_reset_repo.mark_as_used(token_hash)
+            
+            # Atualiza a senha do usuário
+            temp_user = User(
+                id=user.id,
+                name=user.name,
+                email=user.email,
+                password=new_password
+            )
+            updated_user = User(
+                id=user.id,
+                name=user.name,
+                email=user.email,
+                password=temp_user.password,
+                registration_date=user.registration_date,
+                active=user.active,
+                _is_hashed=True
+            )
+            self.user_repo.save(updated_user)
+        
+        return {
+            "message": "Senha alterada com sucesso"
         }

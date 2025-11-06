@@ -1,4 +1,7 @@
 from rest_framework.views import APIView
+from typing import List, Dict
+import time
+import logging
 
 from modules.checkout.application.web.serializers import (
     CreateCheckoutSerializer,
@@ -11,6 +14,55 @@ from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
 from api_pagamento_frete.utils import ErrorResponse, SuccessResponse, produto_repository
+
+# Logger para performance
+logger = logging.getLogger(__name__)
+
+
+def _build_checkout_items_from_order(order, produto_repository) -> List[Dict]:
+    """
+    Helper function para construir itens de checkout a partir de um pedido.
+    Otimiza a busca de produtos fazendo busca em lote (CRÍTICO para performance).
+    
+    Args:
+        order: Entidade Order
+        produto_repository: Repositório de produtos
+        
+    Returns:
+        Lista de itens formatados para checkout
+    """
+    checkout_items = []
+    
+    # Busca todos os produtos de uma vez (otimização crítica - evita N queries)
+    product_ids = [item.product_id for item in order.items]
+    
+    # Tenta usar get_by_ids se disponível (busca em lote)
+    if hasattr(produto_repository, 'get_by_ids'):
+        products = produto_repository.get_by_ids(product_ids)
+        # Cria dicionário para acesso O(1) ao invés de O(n) em loop
+        products_dict = {p.id: p for p in products} if products else {}
+    else:
+        products_dict = {}
+    
+    # Monta os itens do checkout
+    for item in order.items:
+        # Busca produto do dicionário se disponível, senão busca individualmente (fallback)
+        product = products_dict.get(item.product_id) if products_dict else produto_repository.get_by_id(item.product_id)
+        
+        item_data = {
+            'name': item.product_name,
+            'value': float(item.unit_price),
+            'quantity': item.quantity,
+            'externalReference': item.product_id
+        }
+        
+        # Adiciona imagem se disponível
+        if product and hasattr(product, 'imagem') and product.imagem:
+            item_data['imageBase64'] = product.imagem
+        
+        checkout_items.append(item_data)
+    
+    return checkout_items
 
 # Constante com imagem base64 mockada para item de frete
 # Imagem PNG pequena de um ícone de caminhão/frete (pode ser substituída por uma imagem real)
@@ -63,7 +115,12 @@ class CheckoutCreateView(APIView):
             }
         }
         """
+        # Logging de performance - início
+        start_time = time.time()
+        logger.info("=== INÍCIO CRIAÇÃO CHECKOUT ===")
+        
         # Autenticação
+        auth_start = time.time()
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             return ErrorResponse.unauthorized("Token não informado")
@@ -75,21 +132,29 @@ class CheckoutCreateView(APIView):
             user_service.authenticate(token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        logger.info(f"⏱️ Autenticação: {(time.time() - auth_start)*1000:.2f}ms")
 
         # Validação dos dados
+        validation_start = time.time()
         serializer = CreateCheckoutSerializer(data=request.data)
         if not serializer.is_valid():
             return ErrorResponse.validation_error(serializer.errors)
 
         validated_data = serializer.validated_data.copy()
+        logger.info(f"⏱️ Validação: {(time.time() - validation_start)*1000:.2f}ms")
+        
+        # Variável para guardar order_id (otimização)
+        order_id = None
         
         # Se externalReference foi informado e não tem value/items, busca do pedido
         if validated_data.get('externalReference') and not validated_data.get('value'):
+            order_fetch_start = time.time()
             from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
             
             order_repository = OrderRepository()
             try:
                 order = order_repository.get_by_external_reference(validated_data['externalReference'])
+                logger.info(f"⏱️ Busca pedido: {(time.time() - order_fetch_start)*1000:.2f}ms")
                 
                 if not order:
                     return ErrorResponse.bad_request(
@@ -102,37 +167,39 @@ class CheckoutCreateView(APIView):
                         "Não é possível criar checkout para um pedido inativo"
                     )
                 
-                # Busca dados dos produtos e monta os itens
-                checkout_items = []
-                for item in order.items:
-                    product = produto_repository.get_by_id(item.product_id)
-                    if product:
-                        item_data = {
-                            'name': item.product_name,
-                            'value': float(item.unit_price),
-                            'quantity': item.quantity,
-                            'externalReference': item.product_id  # ID do produto como externalReference
-                        }
-                        # Adiciona imagem se disponível
-                        if product.imagem:
-                            item_data['imageBase64'] = product.imagem
-                        checkout_items.append(item_data)
+                # Guarda order_id para evitar busca duplicada no service (otimização)
+                order_id = order.id
+                
+                # Busca dados dos produtos e monta os itens (usando helper otimizado - busca em lote)
+                products_start = time.time()
+                checkout_items = _build_checkout_items_from_order(order, produto_repository)
+                logger.info(f"⏱️ Busca produtos e montagem itens: {(time.time() - products_start)*1000:.2f}ms")
                 
                 # Busca informações do frete se existir e adiciona como último item
+                # Shipping já foi carregado via select_related, mas como retornamos entidade, precisamos buscar
+                shipping_start = time.time()
                 from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
                 try:
-                    shipping = OrderShippingModel.objects.get(order_id=order.id)
+                    # Busca otimizada usando apenas os campos necessários
+                    shipping = OrderShippingModel.objects.only(
+                        'service_id', 'service_name', 'price', 'custom_price', 'company'
+                    ).get(order_id=order.id)
+                    
+                    # Calcula o preço final (final_price é uma property, não um campo)
+                    final_price = float(shipping.custom_price if shipping.custom_price is not None else shipping.price)
                     
                     # Monta o nome do frete incluindo service_name e name da company se disponível
-                    shipping_company_name_parts = [shipping.company['name']]
+                    shipping_company_name_parts = []
                     if shipping.company and isinstance(shipping.company, dict) and shipping.company.get('name'):
+                        shipping_company_name_parts.append(shipping.company['name'])
+                    if shipping.service_name:
                         shipping_company_name_parts.append(shipping.service_name)
                     
-                    shipping_name = " ".join(shipping_company_name_parts)
+                    shipping_name = " ".join(shipping_company_name_parts) if shipping_company_name_parts else "Frete"
                     
                     shipping_item = {
                         'name': f"Frete - {shipping_name}",
-                        'value': float(shipping.final_price),
+                        'value': final_price,
                         'quantity': 1,
                         'externalReference': f"SHIPPING_{shipping.service_id}",
                         'imageBase64': SHIPPING_ITEM_IMAGE_BASE64
@@ -141,6 +208,7 @@ class CheckoutCreateView(APIView):
                 except OrderShippingModel.DoesNotExist:
                     # Pedido sem frete, continua normalmente
                     pass
+                logger.info(f"⏱️ Busca shipping: {(time.time() - shipping_start)*1000:.2f}ms")
                 
                 # Atualiza os dados validados com os valores do pedido
                 validated_data['value'] = float(order.total)
@@ -157,9 +225,17 @@ class CheckoutCreateView(APIView):
                 )
 
         # Criação do checkout
+        checkout_creation_start = time.time()
         checkout_service = CheckoutService(CheckoutRepository())
         try:
+            # Passa order_id se disponível para evitar busca duplicada no service (otimização)
+            if order_id:
+                validated_data['order_id'] = order_id
             result = checkout_service.create_checkout(**validated_data)
+            
+            total_time = (time.time() - start_time) * 1000
+            logger.info(f"⏱️ Criação checkout (service): {(time.time() - checkout_creation_start)*1000:.2f}ms")
+            logger.info(f"✅ === TOTAL: {total_time:.2f}ms ===")
             
             return SuccessResponse.created(
                 data=result,
@@ -169,6 +245,7 @@ class CheckoutCreateView(APIView):
         except ValueError as e:
             return ErrorResponse.bad_request(str(e))
         except Exception as e:
+            logger.error(f"❌ Erro ao criar checkout: {e}")
             return ErrorResponse.internal_server_error(
                 "Erro interno do servidor", 
                 details=str(e)

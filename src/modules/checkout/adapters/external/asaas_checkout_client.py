@@ -1,8 +1,45 @@
 import requests
 import json
+import time
+import logging
 from typing import Dict, Optional, Any, List
 from django.conf import settings
 from modules.checkout.domain.entities.checkout_entity import Checkout
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+logger = logging.getLogger(__name__)
+
+# Singleton para sessão HTTP compartilhada (reutiliza conexões)
+_shared_session = None
+
+
+def get_shared_session():
+    """Retorna uma sessão HTTP compartilhada com pool de conexões"""
+    global _shared_session
+    if _shared_session is None:
+        _shared_session = requests.Session()
+        
+        # Configura retry automático
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"]
+        )
+        
+        # Configura pool de conexões
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,  # Número de pools de conexão
+            pool_maxsize=20,      # Máximo de conexões por pool
+            pool_block=False      # Não bloqueia se pool estiver cheio
+        )
+        
+        _shared_session.mount("http://", adapter)
+        _shared_session.mount("https://", adapter)
+    
+    return _shared_session
 
 
 class AsaasCheckoutClient:
@@ -17,6 +54,9 @@ class AsaasCheckoutClient:
         
         if not self.api_token:
             raise ValueError("ASAAS_API_TOKEN não configurado nas variáveis de ambiente")
+        
+        # Usa sessão compartilhada para reutilizar conexões
+        self.session = get_shared_session()
     
     def _get_headers(self) -> Dict[str, str]:
         """Retorna os headers padrão para requisições à API do Asaas"""
@@ -45,16 +85,22 @@ class AsaasCheckoutClient:
         headers = self._get_headers()
         
         try:
+            timeout = 15  # Timeout de 15 segundos
+            request_start = time.time()
+            
             if method.upper() == 'GET':
-                response = requests.get(url, headers=headers)
+                response = self.session.get(url, headers=headers, timeout=timeout)
             elif method.upper() == 'POST':
-                response = requests.post(url, headers=headers, json=data)
+                response = self.session.post(url, headers=headers, json=data, timeout=timeout)
             elif method.upper() == 'PUT':
-                response = requests.put(url, headers=headers, json=data)
+                response = self.session.put(url, headers=headers, json=data, timeout=timeout)
             elif method.upper() == 'DELETE':
-                response = requests.delete(url, headers=headers)
+                response = self.session.delete(url, headers=headers, timeout=timeout)
             else:
                 raise ValueError(f"Método HTTP não suportado: {method}")
+            
+            request_time = (time.time() - request_start) * 1000
+            logger.info(f"⏱️ [Asaas] {method} {endpoint}: {request_time:.2f}ms")
             
             response.raise_for_status()
             

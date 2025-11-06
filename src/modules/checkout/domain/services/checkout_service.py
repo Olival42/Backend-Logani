@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 from django.db import transaction
+import time
+import logging
 
 from modules.checkout.domain.entities.checkout_entity import Checkout
 from modules.checkout.domain.repositories.checkout_repository import ICheckoutRepository
@@ -11,6 +13,8 @@ from modules.cliente.domain.entities.client_entity import Client as ClientEntity
 from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
 from modules.pagamento.domain.entities.payment_entity import Payment as PaymentEntity
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CheckoutService:
@@ -59,7 +63,8 @@ class CheckoutService:
         installments: int = 1,
         paymentMethods: Optional[List[str]] = None,
         items: Optional[List[Dict]] = None,
-        installment: Optional[Dict] = None
+        installment: Optional[Dict] = None,
+        order_id: Optional[str] = None  # Otimização: evita busca duplicada do pedido
     ) -> Dict[str, Any]:
         """
         Cria um novo checkout baseado na documentação ASAAS
@@ -92,12 +97,15 @@ class CheckoutService:
                 raise ValueError("WalletId não encontrado nas variáveis de ambiente (ASAAS_WALLET_ID)")
             
             # Busca o cliente local pelo asaas_id
+            client_start = time.time()
             client_entity = self.client_repository.get_by_asaas_id(customer)
             if not client_entity:
                 raise ValueError(f"Cliente com ID ASAAS '{customer}' não encontrado no sistema local")
+            logger.info(f"⏱️ [Service] Busca cliente: {(time.time() - client_start)*1000:.2f}ms")
             
-            # Calcula data de expiração baseada nos minutos
-            expires_at = datetime.now() + timedelta(minutes=minutesToExpire)
+            # Calcula data de expiração baseada nos minutos (usa timezone do Django)
+            from django.utils import timezone
+            expires_at = timezone.now() + timedelta(minutes=minutesToExpire)
             
             # Gera nome baseado no tipo de cobrança e cliente
             name = f"Checkout {chargeTypes[0]} - {client_entity.name}"
@@ -118,6 +126,7 @@ class CheckoutService:
             )
             
             # Cria primeiro no Asaas
+            asaas_start = time.time()
             asaas_response = self.asaas_client.create_checkout(
                 checkout=checkout,
                 items=items,
@@ -127,6 +136,7 @@ class CheckoutService:
                 chargeTypes=chargeTypes,
                 installment=installment
             )
+            logger.info(f"⏱️ [Service] Chamada Asaas (total): {(time.time() - asaas_start)*1000:.2f}ms")
             
             if 'id' not in asaas_response:
                 raise ValueError("Asaas não retornou ID do checkout criado")
@@ -147,9 +157,11 @@ class CheckoutService:
             
             # Salva no repositório local com transação atômica
             # Se falhar, tenta fazer rollback no Asaas
+            db_start = time.time()
             try:
                 with transaction.atomic():
                     saved_checkout = self.checkout_repository.save(checkout)
+                    logger.info(f"⏱️ [Service] Save checkout: {(time.time() - db_start)*1000:.2f}ms")
                     
                     # Cria Payment associado ao Checkout dentro da mesma transação
                     payment = None
@@ -185,7 +197,7 @@ class CheckoutService:
                                 external_reference=externalReference,
                                 installments=installments,
                                 expires_at=expires_at,
-                                created_at=datetime.now()
+                                created_at=timezone.now()
                             )
                             payment = self.payment_repository.save(payment)
                         except Exception as e:

@@ -24,6 +24,11 @@ class ICheckoutRepository(ABC):
         pass
     
     @abstractmethod
+    def get_by_external_reference(self, external_reference: str) -> Optional[Checkout]:
+        """Busca um checkout pela referência externa"""
+        pass
+    
+    @abstractmethod
     def get_by_client(self, client_id: str) -> List[Checkout]:
         """Busca checkouts por cliente"""
         pass

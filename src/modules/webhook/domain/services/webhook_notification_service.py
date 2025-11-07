@@ -11,6 +11,7 @@ from modules.pagamento.domain.entities.payment_entity import Payment
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
 from modules.pedido.domain.entities.order_entity import Order
 from modules.checkout.domain.repositories.checkout_repository import ICheckoutRepository
+from modules.checkout.domain.services.checkout_service import CheckoutService
 
 
 class WebhookNotificationService:
@@ -29,6 +30,7 @@ class WebhookNotificationService:
         self.payment_repository = payment_repository
         self.order_repository = order_repository
         self.checkout_repository = checkout_repository
+        self.checkout_service = CheckoutService(checkout_repository) if checkout_repository else None
     
     def receive_and_save_notification(self, data: Dict[str, Any]) -> WebhookNotification:
         """
@@ -103,6 +105,8 @@ class WebhookNotificationService:
                 result = self._process_payment_created(notification)
             elif notification.event == 'CHECKOUT_CANCELED':
                 result = self._process_checkout_canceled(notification)
+            elif notification.event == 'CHECKOUT_EXPIRED':
+                result = self._process_checkout_expired(notification)
             else:
                 # Eventos que não exigem ação (visualização, etc)
                 result = {
@@ -776,6 +780,52 @@ class WebhookNotificationService:
             }
         
         return result
+    
+    def _process_checkout_expired(self, notification: WebhookNotification) -> Dict[str, Any]:
+        """Processa checkout expirado"""
+        if not self.checkout_service or not self.checkout_repository:
+            return {
+                'success': False,
+                'message': 'Checkout repository não configurado',
+                'event': 'CHECKOUT_EXPIRED'
+            }
+        
+        checkout_data = {}
+        if notification.data and isinstance(notification.data, dict):
+            checkout_data = notification.data.get('checkout', {}) or {}
+        
+        asaas_checkout_id = checkout_data.get('id') or notification.checkout_session
+        external_reference = checkout_data.get('externalReference') or notification.external_reference
+        
+        processing_result = None
+        errors = []
+        
+        if asaas_checkout_id:
+            try:
+                processing_result = self.checkout_service.handle_checkout_expired_by_asaas_id(asaas_checkout_id)
+            except ValueError as e:
+                errors.append(str(e))
+        
+        if processing_result is None and external_reference:
+            try:
+                processing_result = self.checkout_service.handle_checkout_expired_by_reference(external_reference)
+            except ValueError as e:
+                errors.append(str(e))
+        
+        if processing_result is None:
+            return {
+                'success': False,
+                'message': 'Checkout expirado mas não localizado no sistema local',
+                'event': 'CHECKOUT_EXPIRED',
+                'asaas_checkout_id': asaas_checkout_id,
+                'external_reference': external_reference,
+                'errors': errors
+            }
+        
+        return {
+            **processing_result,
+            'event': 'CHECKOUT_EXPIRED'
+        }
     
     def _extract_installment_number(self, notification: WebhookNotification) -> Optional[int]:
         """

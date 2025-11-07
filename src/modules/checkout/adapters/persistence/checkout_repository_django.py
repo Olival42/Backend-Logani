@@ -67,6 +67,14 @@ class CheckoutRepository(ICheckoutRepository):
         except CheckoutModel.DoesNotExist:
             return None
     
+    def get_by_external_reference(self, external_reference: str) -> Optional[Checkout]:
+        """Busca um checkout pela referência externa"""
+        try:
+            checkout_model = CheckoutModel.objects.get(external_reference=external_reference)
+            return self._model_to_entity(checkout_model)
+        except CheckoutModel.DoesNotExist:
+            return None
+    
     def get_by_client(self, client_id: str) -> List[Checkout]:
         """Busca checkouts por cliente"""
         checkout_models = CheckoutModel.objects.filter(client_id=client_id).order_by('-created_at')

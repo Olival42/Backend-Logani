@@ -13,7 +13,27 @@ from modules.cliente.adapters.persistence.client_repository_django import Client
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from modules.checkout.domain.services.coupon_service import CouponService
 from api_pagamento_frete.utils import ErrorResponse, SuccessResponse, produto_repository
+from decimal import Decimal
+
+
+def _authenticate_and_get_client(user_service, token):
+    """
+    Autentica o usuário e retorna o payload do token e o cliente associado.
+    Levanta ValueError para problemas de token e LookupError quando o cliente não é encontrado.
+    """
+    payload = user_service.authenticate(token)
+    user_id = payload.get('user_id')
+    if not user_id:
+        raise ValueError("Token inválido: usuário sem identificação.")
+    
+    client_repository = ClientRepository()
+    client = client_repository.get_by_user_id(str(user_id))
+    if not client:
+        raise LookupError("Cliente não encontrado para o usuário autenticado.")
+    
+    return payload, client
 
 
 class OrderCreateView(APIView):
@@ -31,38 +51,30 @@ class OrderCreateView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Validação dos dados
         serializer = CreateOrderSerializer(data=request.data)
         if not serializer.is_valid():
             return ErrorResponse.validation_error(serializer.errors)
         
-        # Busca o cliente do usuário logado
-        # Extrai o user_id do token
-        try:
-            payload = user_service.authenticate(token)
-            user_id = payload.get('user_id')
-            
-            client_repository = ClientRepository()
-            client = client_repository.get_by_user_id(str(user_id))
-            
-            if not client:
-                return ErrorResponse.not_found("Cliente não encontrado para o usuário")
-        except Exception as e:
-            return ErrorResponse.internal_server_error(
-                "Erro ao buscar cliente", 
-                details=str(e)
-            )
-        
         # Busca dados dos produtos pelos IDs
         items_with_product_data = []
+        seen_products = set()
         
         for item in serializer.validated_data['items']:
             product_id = item['product_id']
             quantity = item['quantity']
+            
+            if product_id in seen_products:
+                return ErrorResponse.bad_request(
+                    f"O produto com ID '{product_id}' foi informado mais de uma vez."
+                )
+            seen_products.add(product_id)
             
             # Busca o produto
             product = produto_repository.get_by_id(product_id)
@@ -70,6 +82,20 @@ class OrderCreateView(APIView):
             if not product:
                 return ErrorResponse.bad_request(
                     f"Produto com ID '{product_id}' não encontrado"
+                )
+            
+            product_is_active = True
+            if hasattr(product, 'ativo'):
+                product_is_active = bool(getattr(product, 'ativo'))
+            elif hasattr(product, 'active'):
+                product_is_active = bool(getattr(product, 'active'))
+            elif hasattr(product, 'is_active'):
+                attr = getattr(product, 'is_active')
+                product_is_active = attr() if callable(attr) else bool(attr)
+            
+            if not product_is_active:
+                return ErrorResponse.bad_request(
+                    f"Produto '{getattr(product, 'nome', product_id)}' está inativo e não pode ser adicionado ao pedido."
                 )
             
             # Monta o item com todos os dados do produto
@@ -80,14 +106,54 @@ class OrderCreateView(APIView):
                 'unit_price': float(product.preco)
             })
         
+        # Aplica cupom de desconto se fornecido
+        coupon_code = serializer.validated_data.get('couponCode')
+        discount_amount = Decimal('0.00')
+        discount_info = None
+        
+        if coupon_code:
+            try:
+                coupon_service = CouponService()
+                # Calcula subtotal para validar o cupom
+                subtotal = Decimal('0')
+                for item in items_with_product_data:
+                    subtotal += Decimal(str(item['unit_price'])) * Decimal(str(item['quantity']))
+                
+                # Calcula o desconto passando o client_id para validação de primeira compra
+                discount_info = coupon_service.calculate_discount(
+                    coupon_code, 
+                    subtotal, 
+                    client_id=str(client.id)
+                )
+                discount_amount = discount_info['discount_amount']
+                
+            except ValueError as e:
+                return ErrorResponse.bad_request(str(e))
+            except Exception as e:
+                return ErrorResponse.internal_server_error(
+                    "Erro ao aplicar cupom de desconto",
+                    details=str(e)
+                )
+
         # Criação do pedido
         order_service = OrderService(OrderRepository())
         try:
             result = order_service.create_order(
                 client=client,
                 items=items_with_product_data,
-                notes=serializer.validated_data.get('notes')
+                notes=serializer.validated_data.get('notes'),
+                discount_amount=discount_amount
             )
+            
+            # Adiciona informação do cupom na resposta se aplicado
+            if discount_info:
+                result['coupon_applied'] = {
+                    'code': discount_info['coupon_info']['code'],
+                    'description': discount_info['coupon_info']['description'],
+                    'discount_amount': float(discount_info['discount_amount']),
+                    'original_subtotal': float(discount_info['coupon_info']['original_value']),
+                    'final_total': float(discount_info['final_value'])
+                }
             
             return SuccessResponse.created(
                 data=result,
@@ -124,9 +190,11 @@ class OrderDetailView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Busca o pedido (apenas ativos - filtrado automaticamente pelo repositório)
         order_service = OrderService(OrderRepository())
@@ -135,6 +203,9 @@ class OrderDetailView(APIView):
             
             if not order:
                 return ErrorResponse.not_found("Pedido não encontrado ou inativo")
+            
+            if str(order.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Pedido não pertence ao cliente autenticado.")
             
             # Prepara dados do cliente (apenas id e name)
             client_data = {
@@ -222,9 +293,11 @@ class OrderConfirmView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Confirma o pedido
         order_service = OrderService(OrderRepository())
@@ -260,9 +333,11 @@ class OrderCancelView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Cancela o pedido
         order_service = OrderService(OrderRepository())
@@ -298,26 +373,11 @@ class OrderListByClientView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
-        
-        # Busca cliente
-        try:
-            # Extrai o user_id do token
-            payload = user_service.authenticate(token)
-            user_id = payload.get('user_id')
-            
-            client_repository = ClientRepository()
-            client = client_repository.get_by_user_id(str(user_id))
-            
-            if not client:
-                return ErrorResponse.not_found("Cliente não encontrado")
-        except Exception as e:
-            return ErrorResponse.internal_server_error(
-                "Erro ao buscar cliente", 
-                details=str(e)
-            )
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Parâmetros de filtro opcionais
         status_filter = request.query_params.get('status')  # Filtro opcional por status
@@ -428,9 +488,11 @@ class OrderUpdateView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Validação dos dados
         serializer = UpdateOrderSerializer(data=request.data)
@@ -440,10 +502,26 @@ class OrderUpdateView(APIView):
         # Atualização do pedido
         order_service = OrderService(OrderRepository())
         try:
+            order = order_service.get_order(order_id)
+            if not order:
+                return ErrorResponse.not_found("Pedido não encontrado ou inativo")
+            if str(order.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Pedido não pertence ao cliente autenticado.")
+        except Exception as e:
+            return ErrorResponse.internal_server_error(
+                "Erro ao buscar pedido", 
+                details=str(e)
+            )
+        try:
+            # Obtém os dados validados
+            items_actions = serializer.validated_data.get('items')
+            coupon_code = serializer.validated_data.get('couponCode')
+            
             result = order_service.update_order_items(
                 order_id=order_id,
-                items_actions=serializer.validated_data['items'],
-                produto_repository=produto_repository
+                items_actions=items_actions,
+                produto_repository=produto_repository if items_actions else None,
+                coupon_code=coupon_code
             )
             
             return SuccessResponse.ok(
@@ -480,9 +558,11 @@ class OrderAddShippingView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
         
         # Validação dos dados
         serializer = AddShippingToOrderSerializer(data=request.data)
@@ -495,6 +575,8 @@ class OrderAddShippingView(APIView):
             order = order_service.get_order(order_id)
             if not order:
                 return ErrorResponse.not_found("Pedido não encontrado ou inativo")
+            if str(order.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Pedido não pertence ao cliente autenticado.")
         except Exception as e:
             return ErrorResponse.internal_server_error(
                 "Erro ao buscar pedido",

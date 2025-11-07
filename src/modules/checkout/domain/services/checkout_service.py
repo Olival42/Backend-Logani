@@ -1,5 +1,5 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from uuid import uuid4
 from django.db import transaction
@@ -418,16 +418,20 @@ class CheckoutService:
             
             # Atualiza status se necessário
             asaas_status = asaas_response.get('status', '')
+            expired_result = None
             if asaas_status == 'PAID' and checkout.status != 'PAID':
                 checkout.mark_as_paid()
                 self.checkout_repository.save(checkout)
+            elif asaas_status == 'CHECKOUT_EXPIRED':
+                expired_result = self._handle_checkout_expired(checkout)
             
             return {
                 'local_id': str(checkout.id),
                 'asaas_id': checkout.asaas_id,
                 'local_status': checkout.status,
                 'asaas_status': asaas_status,
-                'asaas_data': asaas_response
+                'asaas_data': asaas_response,
+                'expired_processing': expired_result
             }
             
         except Exception as e:
@@ -444,11 +448,92 @@ class CheckoutService:
         count = 0
         
         for checkout in expired_checkouts:
-            checkout.expire()
-            self.checkout_repository.save(checkout)
+            self._handle_checkout_expired(checkout)
             count += 1
         
         return count
+    
+    def handle_checkout_expired_by_asaas_id(self, asaas_id: str) -> Dict[str, Any]:
+        """Processa expiração de checkout a partir do ID do Asaas."""
+        checkout = self.checkout_repository.get_by_asaas_id(asaas_id)
+        if not checkout:
+            raise ValueError("Checkout não encontrado para o ID do Asaas fornecido.")
+        return self._handle_checkout_expired(checkout)
+    
+    def handle_checkout_expired_by_reference(self, external_reference: str) -> Dict[str, Any]:
+        """Processa expiração de checkout a partir da referência externa."""
+        checkout = self.checkout_repository.get_by_external_reference(external_reference)
+        if not checkout:
+            raise ValueError("Checkout não encontrado para a referência externa fornecida.")
+        return self._handle_checkout_expired(checkout)
+    
+    def _handle_checkout_expired(self, checkout: Checkout) -> Dict[str, Any]:
+        """
+        Processa checkout expirado:
+        - Atualiza status do checkout para EXPIRED
+        - Reativa pedido associado (status PENDING)
+        - Cancela pagamento associado (se existir)
+        """
+        order_updated = False
+        order_id = None
+        payment_cancelled = False
+        payment_id = None
+        
+        with transaction.atomic():
+            previous_status = checkout.status
+            if checkout.status == 'PENDING':
+                checkout.expire()
+            else:
+                checkout.status = 'EXPIRED'
+                checkout.updated_at = datetime.now()
+            self.checkout_repository.save(checkout)
+            
+            external_reference = checkout.external_reference
+            if external_reference and self.order_repository:
+                try:
+                    order = self.order_repository.get_by_external_reference(external_reference)
+                    if order:
+                        order_id = str(order.id)
+                        if order.status != 'PENDING':
+                            order.status = 'PENDING'
+                            order.confirmed_at = None
+                            order.updated_at = datetime.now(dt_timezone.utc)
+                            self.order_repository.update(order)
+                            order_updated = True
+                except Exception as order_error:
+                    logger.warning(f"⚠️ Erro ao atualizar pedido associado ao checkout expirado: {order_error}")
+            
+            if self.payment_repository:
+                try:
+                    payment = None
+                    if checkout.asaas_id:
+                        payment = self.payment_repository.get_by_asaas_checkout_id(checkout.asaas_id)
+                    if not payment and external_reference:
+                        payment = self.payment_repository.get_by_external_reference(external_reference)
+                    if payment:
+                        payment_id = payment.id
+                        if payment.status not in ['CANCELLED', 'REFUNDED']:
+                            if payment.status == 'PENDING':
+                                payment.cancel()
+                            else:
+                                payment.status = 'CANCELLED'
+                                payment.updated_at = datetime.now(dt_timezone.utc)
+                            self.payment_repository.save(payment)
+                            payment_cancelled = True
+                except Exception as payment_error:
+                    logger.warning(f"⚠️ Erro ao cancelar payment associado ao checkout expirado: {payment_error}")
+        
+        return {
+            'success': True,
+            'message': 'Checkout expirado processado',
+            'checkout_id': str(checkout.id) if checkout.id else None,
+            'checkout_status': checkout.status,
+            'previous_status': previous_status,
+            'order_updated': order_updated,
+            'order_id': order_id,
+            'payment_cancelled': payment_cancelled,
+            'payment_id': payment_id
+        }
     
     def get_expired_checkouts(self) -> List[Checkout]:
         """

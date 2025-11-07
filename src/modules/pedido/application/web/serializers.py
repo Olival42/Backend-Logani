@@ -45,10 +45,25 @@ class CreateOrderSerializer(serializers.Serializer):
         help_text="Observações do pedido"
     )
     
+    couponCode = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Código do cupom de desconto",
+        error_messages={
+            "invalid": "Código do cupom inválido."
+        }
+    )
+    
     def validate_items(self, value):
         """Valida se há pelo menos um item"""
         if not value or len(value) == 0:
             raise serializers.ValidationError("O pedido deve ter pelo menos um item.")
+        
+        product_ids = [item['product_id'] for item in value if 'product_id' in item]
+        if len(product_ids) != len(set(product_ids)):
+            raise serializers.ValidationError("Cada produto deve aparecer apenas uma vez no pedido.")
         return value
 
 
@@ -177,19 +192,37 @@ class UpdateOrderItemSerializer(serializers.Serializer):
 
 
 class UpdateOrderSerializer(serializers.Serializer):
-    """Serializer para atualização de pedido (itens)"""
+    """Serializer para atualização de pedido (itens e/ou cupom)"""
     
     items = UpdateOrderItemSerializer(
         many=True,
-        required=True,
-        help_text="Lista de ações a serem executadas nos itens do pedido"
+        required=False,
+        allow_empty=True,
+        help_text="Lista de ações a serem executadas nos itens do pedido (opcional)"
     )
     
-    def validate_items(self, value):
-        """Valida se há pelo menos uma ação"""
-        if not value or len(value) == 0:
-            raise serializers.ValidationError("É necessário informar pelo menos uma ação.")
-        return value
+    couponCode = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Código do cupom de desconto a ser aplicado",
+        error_messages={
+            "invalid": "Código do cupom inválido."
+        }
+    )
+    
+    def validate(self, data):
+        """Valida que pelo menos items ou couponCode foi fornecido"""
+        items = data.get('items')
+        coupon_code = data.get('couponCode')
+        
+        if not items and not coupon_code:
+            raise serializers.ValidationError(
+                "É necessário informar pelo menos 'items' ou 'couponCode'."
+            )
+        
+        return data
 
 
 class AddShippingToOrderSerializer(serializers.Serializer):
@@ -208,6 +241,7 @@ class AddShippingToOrderSerializer(serializers.Serializer):
         required=True,
         max_digits=10,
         decimal_places=2,
+        min_value=Decimal('0.01'),
         help_text="Preço do frete"
     )
     custom_price = serializers.DecimalField(
@@ -215,6 +249,7 @@ class AddShippingToOrderSerializer(serializers.Serializer):
         allow_null=True,
         max_digits=10,
         decimal_places=2,
+        min_value=Decimal('0.01'),
         help_text="Preço customizado (se aplicável)"
     )
     delivery_time = serializers.IntegerField(

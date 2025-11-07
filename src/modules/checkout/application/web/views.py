@@ -11,7 +11,24 @@ from modules.checkout.adapters.persistence.checkout_repository_django import Che
 from modules.usuario.domain.services import UserService
 from modules.usuario.adapters.persistence.user_repository_django import UserRepository
 from modules.usuario.adapters.persistence.blacklist_repository_django import BlacklistRepository
+from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
+from modules.checkout.adapters.persistence.models import Checkout as CheckoutModel
 from api_pagamento_frete.utils import ErrorResponse, SuccessResponse, produto_repository
+from decimal import Decimal, ROUND_HALF_UP
+
+
+def _authenticate_and_get_client(user_service, token):
+    payload = user_service.authenticate(token)
+    user_id = payload.get('user_id')
+    if not user_id:
+        raise ValueError("Token inválido: usuário sem identificação.")
+    
+    client_repository = ClientRepository()
+    client = client_repository.get_by_user_id(str(user_id))
+    if not client:
+        raise LookupError("Cliente não encontrado para o usuário autenticado.")
+    
+    return payload, client
 
 
 def _build_checkout_items_from_order(order, produto_repository) -> List[Dict]:
@@ -109,6 +126,9 @@ class CheckoutCreateView(APIView):
                 "maxInstallmentCount": 5
             }
         }
+        
+        Nota: Se o pedido tiver cupom de desconto aplicado, o desconto será automaticamente
+        aplicado no checkout. O desconto é calculado automaticamente a partir do pedido.
         """
         # Autenticação
         auth_header = request.headers.get("Authorization")
@@ -119,9 +139,11 @@ class CheckoutCreateView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
 
         # Validação dos dados
         serializer = CreateCheckoutSerializer(data=request.data)
@@ -132,6 +154,70 @@ class CheckoutCreateView(APIView):
         
         # Variável para guardar order_id (otimização)
         order_id = None
+        manual_items = validated_data.get('items') or []
+        charge_types = validated_data.get('chargeTypes', [])
+        installment_config = validated_data.get('installment')
+        
+        # Validações relacionadas a parcelamento
+        if installment_config:
+            if 'INSTALLMENT' not in charge_types:
+                return ErrorResponse.bad_request(
+                    "Para configurar parcelamento é necessário incluir 'INSTALLMENT' em chargeTypes."
+                )
+            
+            max_installments = installment_config.get('maxInstallmentCount')
+            if max_installments is None:
+                return ErrorResponse.bad_request(
+                    "O campo 'maxInstallmentCount' é obrigatório dentro de 'installment'."
+                )
+            try:
+                max_installments = int(max_installments)
+            except (TypeError, ValueError):
+                return ErrorResponse.bad_request(
+                    "O campo 'maxInstallmentCount' deve ser um número inteiro."
+                )
+            
+            if max_installments < 1 or max_installments > 20:
+                return ErrorResponse.bad_request(
+                    "O campo 'maxInstallmentCount' deve estar entre 1 e 20 parcelas."
+                )
+            
+            installment_config['maxInstallmentCount'] = max_installments
+            validated_data['installment'] = installment_config
+        elif 'INSTALLMENT' in charge_types:
+            return ErrorResponse.bad_request(
+                "Informe o objeto 'installment' quando utilizar 'INSTALLMENT' em chargeTypes."
+            )
+        
+        # Validações específicas para checkouts manuais (sem pedido)
+        if not validated_data.get('externalReference'):
+            if not manual_items:
+                return ErrorResponse.bad_request(
+                    "Para criar um checkout manual é necessário informar pelo menos um item."
+                )
+            
+            # Garante que os itens tenham referências únicas quando fornecidas
+            item_references = [
+                item.get('externalReference') for item in manual_items if item.get('externalReference')
+            ]
+            if len(item_references) != len(set(item_references)):
+                return ErrorResponse.bad_request(
+                    "Cada item do checkout deve possuir uma 'externalReference' única."
+                )
+            
+            # Calcula total dos itens e compara com o valor informado
+            if validated_data.get('value') is not None:
+                items_total = Decimal('0.00')
+                for item in manual_items:
+                    quantity = Decimal(str(item.get('quantity', 1)))
+                    item_value = Decimal(str(item['value']))
+                    items_total += item_value * quantity
+                
+                provided_total = Decimal(str(validated_data['value']))
+                if abs(items_total - provided_total) > Decimal('0.01'):
+                    return ErrorResponse.bad_request(
+                        "Valor total informado não corresponde à soma dos itens do checkout."
+                    )
         
         # Se externalReference foi informado e não tem value/items, busca do pedido
         if validated_data.get('externalReference') and not validated_data.get('value'):
@@ -146,10 +232,40 @@ class CheckoutCreateView(APIView):
                         f"Pedido com external_reference '{validated_data['externalReference']}' não encontrado"
                     )
                 
+                if str(order.client.id) != str(client.id):
+                    return ErrorResponse.forbidden("Pedido não pertence ao cliente autenticado.")
+                
+                if getattr(order.client, 'asaas_id', None) and validated_data.get('customer'):
+                    if str(order.client.asaas_id) != str(validated_data['customer']):
+                        return ErrorResponse.bad_request(
+                            "O customer informado não corresponde ao cliente do pedido."
+                        )
+                
+                if order.status != 'PENDING':
+                    return ErrorResponse.bad_request(
+                        f"Não é possível criar checkout para pedidos com status '{order.status}'. Apenas pedidos PENDING são permitidos."
+                    )
                 # Verifica se o pedido está ativo
                 if not order.active:
                     return ErrorResponse.bad_request(
                         "Não é possível criar checkout para um pedido inativo"
+                    )
+                
+                # Verifica se o pedido possui frete associado
+                from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+                if not OrderShippingModel.objects.filter(order_id=order.id).exists():
+                    return ErrorResponse.bad_request(
+                        "Não é possível criar checkout: o pedido informado não possui frete associado."
+                    )
+                
+                # Verifica se já existe checkout ativo para este pedido
+                active_statuses = ['PENDING', 'RECEIVED']
+                if CheckoutModel.objects.filter(
+                    external_reference=validated_data['externalReference'],
+                    status__in=active_statuses
+                ).exists():
+                    return ErrorResponse.bad_request(
+                        "Já existe um checkout ativo para este pedido. Cancele ou aguarde expirar antes de criar outro."
                     )
                 
                 # Guarda order_id para evitar busca duplicada no service (otimização)
@@ -157,10 +273,13 @@ class CheckoutCreateView(APIView):
                 
                 # Busca dados dos produtos e monta os itens (usando helper otimizado - busca em lote)
                 checkout_items = _build_checkout_items_from_order(order, produto_repository)
+                # Preparação para eventuais ajustes de desconto
+                def _round_currency(value: Decimal) -> Decimal:
+                    return value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 
                 # Busca informações do frete se existir e adiciona como último item
-                # Shipping já foi carregado via select_related, mas como retornamos entidade, precisamos buscar
                 from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+                shipping_price = Decimal('0.00')
                 try:
                     # Busca otimizada usando apenas os campos necessários
                     shipping = OrderShippingModel.objects.only(
@@ -169,6 +288,7 @@ class CheckoutCreateView(APIView):
                     
                     # Calcula o preço final (final_price é uma property, não um campo)
                     final_price = float(shipping.custom_price if shipping.custom_price is not None else shipping.price)
+                    shipping_price = Decimal(str(final_price))
                     
                     # Monta o nome do frete incluindo service_name e name da company se disponível
                     shipping_company_name_parts = []
@@ -191,13 +311,98 @@ class CheckoutCreateView(APIView):
                     # Pedido sem frete, continua normalmente
                     pass
                 
-                # Atualiza os dados validados com os valores do pedido
-                validated_data['value'] = float(order.total)
+                # Calcula o desconto corretamente considerando o frete
+                # order.total = (subtotal - desconto) + frete
+                # Então: desconto = subtotal - (order.total - frete)
+                total_without_shipping = order.total - shipping_price
+                order_discount = order.subtotal - total_without_shipping
+                if order_discount < Decimal('0.00'):
+                    order_discount = Decimal('0.00')
+                
+                # Ajusta valores unitários dos produtos de acordo com o desconto aplicado
+                product_indices = []
+                products_total = Decimal('0.00')
+                for idx, item in enumerate(checkout_items):
+                    if str(item.get('externalReference', '')).startswith('SHIPPING_'):
+                        continue
+                    product_indices.append(idx)
+                    products_total += Decimal(str(item['value'])) * Decimal(str(item['quantity']))
+
+                if order_discount > Decimal('0.00') and products_total > Decimal('0.00') and product_indices:
+                    target_products_total = products_total - order_discount
+                    if target_products_total < Decimal('0.00'):
+                        target_products_total = Decimal('0.00')
+
+                    remaining_discount = order_discount
+                    # Distribui desconto proporcionalmente entre os produtos
+                    for idx in product_indices[:-1]:
+                        item = checkout_items[idx]
+                        quantity = Decimal(str(item['quantity']))
+                        unit_price = Decimal(str(item['value']))
+                        item_total = unit_price * quantity
+
+                        proportional_discount = (item_total / products_total) * order_discount
+                        proportional_discount = _round_currency(proportional_discount)
+                        if proportional_discount > remaining_discount:
+                            proportional_discount = remaining_discount
+
+                        new_total = item_total - proportional_discount
+                        if new_total < Decimal('0.00'):
+                            new_total = Decimal('0.00')
+
+                        new_unit_price = new_total / quantity if quantity > 0 else Decimal('0.00')
+                        item['value'] = float(_round_currency(new_unit_price))
+
+                        remaining_discount -= proportional_discount
+                        if remaining_discount <= Decimal('0.00'):
+                            remaining_discount = Decimal('0.00')
+                            break
+
+                    if remaining_discount > Decimal('0.00'):
+                        last_idx = product_indices[-1]
+                        last_item = checkout_items[last_idx]
+                        quantity = Decimal(str(last_item['quantity']))
+                        unit_price = Decimal(str(last_item['value']))
+                        item_total = unit_price * quantity
+                        new_total = item_total - remaining_discount
+                        if new_total < Decimal('0.00'):
+                            new_total = Decimal('0.00')
+                        new_unit_price = new_total / quantity if quantity > 0 else Decimal('0.00')
+                        last_item['value'] = float(_round_currency(new_unit_price))
+                        remaining_discount = Decimal('0.00')
+
+                # Recalcula total com base nos itens (produtos + frete)
+                correct_total = Decimal('0.00')
+                for item in checkout_items:
+                    correct_total += Decimal(str(item['value'])) * Decimal(str(item['quantity']))
+
+                # Recalcula o total correto do checkout: (subtotal - desconto) + frete
+                products_total_with_discount = order.subtotal - order_discount
+                correct_total = correct_total if correct_total > Decimal('0.00') else (products_total_with_discount + shipping_price)
+                
+                # IMPORTANTE: Usa o total recalculado para garantir que está correto
+                # Isso corrige casos onde o order.total pode estar desatualizado
+                validated_data['value'] = float(correct_total)
                 validated_data['items'] = checkout_items
+                
+                # Atualiza o order.total no banco se estiver incorreto (para manter consistência)
+                if abs(order.total - correct_total) > Decimal('0.01'):
+                    from modules.pedido.adapters.persistence.order_repository_django import OrderRepository
+                    order.total = correct_total
+                    order_repository = OrderRepository()
+                    order_repository.update(order)
                 
                 # Se não passou description, usa a do pedido
                 if not validated_data.get('description'):
                     validated_data['description'] = f"Pagamento do pedido {validated_data['externalReference']}"
+                
+                # Adiciona informação do desconto na description se houver
+                if order_discount > Decimal('0.00'):
+                    discount_description = f" | Desconto do pedido aplicado: R$ {order_discount:.2f}"
+                    if validated_data.get('description'):
+                        validated_data['description'] += discount_description
+                    else:
+                        validated_data['description'] = discount_description.strip()
                     
             except Exception as e:
                 return ErrorResponse.internal_server_error(
@@ -208,6 +413,17 @@ class CheckoutCreateView(APIView):
         # Criação do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
+            # Verificação adicional por cliente para checkouts manuais (sem pedido)
+            if not validated_data.get('externalReference'):
+                active_statuses = ['PENDING', 'RECEIVED']
+                if CheckoutModel.objects.filter(
+                    client_id=client.id,
+                    status__in=active_statuses
+                ).exists():
+                    return ErrorResponse.bad_request(
+                        "Não é possível criar um novo checkout: existe outro checkout ativo para este cliente."
+                    )
+            
             # Passa order_id se disponível para evitar busca duplicada no service (otimização)
             if order_id:
                 validated_data['order_id'] = order_id

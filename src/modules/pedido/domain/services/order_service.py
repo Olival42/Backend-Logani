@@ -50,7 +50,8 @@ class OrderService:
         self,
         client: ClientEntity,
         items: List[Dict[str, Any]],
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        discount_amount: Optional[Decimal] = None
     ) -> Dict[str, Any]:
         """
         Cria um novo pedido
@@ -59,6 +60,7 @@ class OrderService:
             client: Entidade do cliente
             items: Lista de itens [{product_id, product_name, quantity, unit_price}]
             notes: Observações adicionais
+            discount_amount: Valor do desconto a ser aplicado (opcional)
             
         Returns:
             Dict com informações do pedido criado
@@ -82,8 +84,24 @@ class OrderService:
             order_items.append(order_item)
             subtotal += total_price
         
+        # Aplica desconto se fornecido
+        discount = discount_amount or Decimal('0.00')
+        if discount > subtotal:
+            discount = subtotal  # Garante que o desconto não seja maior que o subtotal
+        
+        # Calcula total com desconto
+        total = subtotal - discount
+        if total < Decimal('0.00'):
+            total = Decimal('0.00')
+        
         # Gera referência externa
         external_reference = f"ORD_{datetime.now().strftime('%Y%m%d%H%M%S')}_{str(uuid4())[:8].upper()}"
+        
+        # Adiciona informação do desconto nas notas se aplicado
+        final_notes = notes or ""
+        if discount > Decimal('0.00'):
+            discount_note = f"\n\nCupom de desconto aplicado: R$ {discount:.2f}"
+            final_notes = final_notes + discount_note if final_notes else discount_note.strip()
         
         # Cria entidade de pedido
         order = Order(
@@ -91,9 +109,9 @@ class OrderService:
             client=client,
             items=order_items,
             subtotal=subtotal,
-            total=subtotal,
+            total=total,
             external_reference=external_reference,
-            notes=notes
+            notes=final_notes
         )
         
         # Salva com transação atômica para garantir que pedido e itens sejam salvos juntos
@@ -326,17 +344,19 @@ class OrderService:
     def update_order_items(
         self,
         order_id: str,
-        items_actions: List[Dict[str, Any]],
-        produto_repository
+        items_actions: Optional[List[Dict[str, Any]]] = None,
+        produto_repository = None,
+        coupon_code: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Atualiza itens de um pedido (adicionar, remover, atualizar quantidade)
+        Atualiza itens de um pedido (adicionar, remover, atualizar quantidade) e/ou aplica cupom
         Apenas para pedidos PENDING
         
         Args:
             order_id: ID do pedido
-            items_actions: Lista de ações [{action: 'add'|'update'|'remove', product_id, quantity?}]
-            produto_repository: Repositório de produtos para buscar informações
+            items_actions: Lista de ações [{action: 'add'|'update'|'remove', product_id, quantity?}] (opcional)
+            produto_repository: Repositório de produtos para buscar informações (opcional se não houver items)
+            coupon_code: Código do cupom de desconto a ser aplicado (opcional)
             
         Returns:
             Dict com informações do pedido atualizado
@@ -349,72 +369,106 @@ class OrderService:
         if order.status != 'PENDING':
             raise ValueError(f"Pedido não pode ser atualizado. Status atual: {order.status}. Apenas pedidos PENDING podem ser atualizados.")
         
+        # Valida que pelo menos items ou coupon_code foi fornecido
+        if not items_actions and not coupon_code:
+            raise ValueError("É necessário informar pelo menos 'items' ou 'coupon_code'.")
+        
         # Cria cópia da lista de itens atual para manipulação
         updated_items = list(order.items)
         
-        # Processa cada ação
-        for action_data in items_actions:
-            action = action_data['action']
-            product_id = action_data['product_id']
-            quantity = action_data.get('quantity')
-            
-            # Busca produto se for adicionar
-            if action in ['add', 'update']:
-                product = produto_repository.get_by_id(product_id)
-                if not product:
-                    raise ValueError(f"Produto com ID '{product_id}' não encontrado")
-            
-            if action == 'add':
-                # Verifica se o produto já existe no pedido
-                existing_item = None
-                for item in updated_items:
-                    if item.product_id == product_id:
-                        existing_item = item
-                        break
+        # Garante revalidação de cupom ao alterar itens
+        coupon_already_applied = bool(order.notes and "Cupom de desconto aplicado" in order.notes)
+        if items_actions and coupon_already_applied and not coupon_code:
+            raise ValueError("Pedido possui desconto aplicado. Reenvie o cupom para revalidar ao alterar os itens.")
+        
+        # Variável para armazenar informações do cupom aplicado
+        discount_info = None
+        
+        # Processa ações nos itens se fornecidas
+        if items_actions:
+            if not produto_repository:
+                raise ValueError("produto_repository é obrigatório quando items_actions é fornecido")
                 
-                if existing_item:
-                    # Se já existe, atualiza a quantidade
-                    new_quantity = existing_item.quantity + quantity
-                    existing_item.quantity = new_quantity
-                    existing_item.total_price = existing_item.unit_price * Decimal(str(new_quantity))
-                else:
-                    # Se não existe, adiciona novo item
-                    unit_price = Decimal(str(product.preco))
-                    total_price = unit_price * Decimal(str(quantity))
-                    new_item = OrderItem(
-                        product_id=product.id,
-                        product_name=product.nome,
-                        quantity=quantity,
-                        unit_price=unit_price,
-                        total_price=total_price
-                    )
-                    updated_items.append(new_item)
-            
-            elif action == 'update':
-                # Atualiza quantidade de um item existente
-                item_found = False
-                for item in updated_items:
-                    if item.product_id == product_id:
-                        item.quantity = quantity
-                        item.total_price = item.unit_price * Decimal(str(quantity))
-                        item_found = True
-                        break
+            # Processa cada ação
+            for action_data in items_actions:
+                action = action_data['action']
+                product_id = action_data['product_id']
+                quantity = action_data.get('quantity')
                 
-                if not item_found:
-                    raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para atualização")
-            
-            elif action == 'remove':
-                # Remove item do pedido
-                item_to_remove = None
-                for item in updated_items:
-                    if item.product_id == product_id:
-                        item_to_remove = item
-                        break
+                # Busca produto se for adicionar
+                if action in ['add', 'update']:
+                    product = produto_repository.get_by_id(product_id)
+                    if not product:
+                        raise ValueError(f"Produto com ID '{product_id}' não encontrado")
+                    
+                    product_is_active = True
+                    if hasattr(product, 'ativo'):
+                        product_is_active = bool(getattr(product, 'ativo'))
+                    elif hasattr(product, 'active'):
+                        product_is_active = bool(getattr(product, 'active'))
+                    elif hasattr(product, 'is_active'):
+                        attr = getattr(product, 'is_active')
+                        product_is_active = attr() if callable(attr) else bool(attr)
+                    
+                    if not product_is_active:
+                        raise ValueError(
+                            f"Produto '{getattr(product, 'nome', product_id)}' está inativo e não pode ser utilizado no pedido."
+                        )
                 
-                if not item_to_remove:
-                    raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para remoção")
+                if action == 'add':
+                    # Verifica se o produto já existe no pedido
+                    existing_item = None
+                    for item in updated_items:
+                        if item.product_id == product_id:
+                            existing_item = item
+                            break
+                    
+                    if existing_item:
+                        # Se já existe, atualiza a quantidade
+                        new_quantity = existing_item.quantity + quantity
+                        existing_item.quantity = new_quantity
+                        existing_item.total_price = existing_item.unit_price * Decimal(str(new_quantity))
+                    else:
+                        # Se não existe, adiciona novo item
+                        unit_price = Decimal(str(product.preco))
+                        total_price = unit_price * Decimal(str(quantity))
+                        new_item = OrderItem(
+                            product_id=product.id,
+                            product_name=product.nome,
+                            quantity=quantity,
+                            unit_price=unit_price,
+                            total_price=total_price
+                        )
+                        updated_items.append(new_item)
                 
-                updated_items.remove(item_to_remove)
+                elif action == 'update':
+                    # Atualiza quantidade de um item existente
+                    item_found = False
+                    for item in updated_items:
+                        if item.product_id == product_id:
+                            item.quantity = quantity
+                            item.total_price = item.unit_price * Decimal(str(quantity))
+                            item_found = True
+                            break
+                    
+                    if not item_found:
+                        raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para atualização")
+                
+                elif action == 'remove':
+                    # Remove item do pedido
+                    item_to_remove = None
+                    for item in updated_items:
+                        if item.product_id == product_id:
+                            item_to_remove = item
+                            break
+                    
+                    if not item_to_remove:
+                        raise ValueError(f"Produto com ID '{product_id}' não encontrado no pedido para remoção")
+                    
+                    updated_items.remove(item_to_remove)
+        else:
+            # Se não há ações nos itens, mantém os itens atuais
+            pass
         
         # Se todos os itens foram removidos, marca pedido como inativo
         if not updated_items:
@@ -423,15 +477,65 @@ class OrderService:
             order.total = Decimal('0')
             order.mark_as_inactive()
         else:
-            # Recalcula subtotal e total
-            subtotal = Decimal('0')
-            for item in updated_items:
-                subtotal += item.total_price
+            # Recalcula subtotal (se items foram alterados) ou usa o atual
+            if items_actions:
+                # Recalcula subtotal baseado nos itens atualizados
+                subtotal = Decimal('0')
+                for item in updated_items:
+                    subtotal += item.total_price
+            else:
+                # Se não houve mudanças nos itens, usa o subtotal atual
+                subtotal = order.subtotal
+            
+            # Calcula desconto atual (se houver) baseado na diferença entre subtotal e total
+            # Se subtotal != total, significa que já existe desconto aplicado
+            current_discount = order.subtotal - order.total
+            if current_discount < Decimal('0.00'):
+                current_discount = Decimal('0.00')
+            
+            # Aplica cupom se fornecido
+            discount_amount = Decimal('0.00')
+            if coupon_code:
+                try:
+                    from modules.checkout.domain.services.coupon_service import CouponService
+                    coupon_service = CouponService()
+                    
+                    # Valida e calcula desconto baseado no novo subtotal
+                    discount_info = coupon_service.calculate_discount(
+                        coupon_code,
+                        subtotal,
+                        client_id=str(order.client.id)
+                    )
+                    discount_amount = discount_info['discount_amount']
+                    
+                    # Atualiza notas com informação do cupom
+                    # Remove informação de cupom anterior se existir
+                    notes_clean = order.notes or ""
+                    if "Cupom de desconto aplicado:" in notes_clean:
+                        # Remove linha do cupom anterior
+                        lines = notes_clean.split('\n')
+                        notes_clean = '\n'.join([line for line in lines if "Cupom de desconto aplicado:" not in line])
+                    
+                    # Adiciona nova informação do cupom
+                    discount_note = f"\n\nCupom de desconto aplicado: R$ {discount_amount:.2f}"
+                    if discount_info:
+                        discount_note += f" ({discount_info['coupon_info']['code']} - {discount_info['coupon_info']['description']})"
+                    order.notes = notes_clean + discount_note if notes_clean else discount_note.strip()
+                    
+                except ValueError as e:
+                    raise ValueError(f"Erro ao aplicar cupom: {str(e)}")
+                except Exception as e:
+                    raise ValueError(f"Erro ao processar cupom: {str(e)}")
+            
+            # Calcula total com desconto
+            total = subtotal - discount_amount
+            if total < Decimal('0.00'):
+                total = Decimal('0.00')
             
             # Atualiza o pedido com os novos itens
             order.items = updated_items
             order.subtotal = subtotal
-            order.total = subtotal
+            order.total = total
         
         order.updated_at = datetime.now(timezone.utc)
         
@@ -469,6 +573,16 @@ class OrderService:
             'updated_at': updated_order.updated_at.isoformat() if updated_order.updated_at else None,
             'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
         }
+        
+        # Adiciona informação do cupom na resposta se aplicado
+        if discount_info:
+            result['coupon_applied'] = {
+                'code': discount_info['coupon_info']['code'],
+                'description': discount_info['coupon_info']['description'],
+                'discount_amount': float(discount_info['discount_amount']),
+                'original_subtotal': float(discount_info['coupon_info']['original_value']),
+                'final_total': float(discount_info['final_value'])
+            }
         
         # Se o pedido foi inativado, adiciona mensagem informativa
         if not updated_order.active:
@@ -541,20 +655,31 @@ class OrderService:
         
         # Verifica se já existe frete no pedido
         from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+        existing_shipping_price = Decimal('0.00')
         try:
             existing_shipping = OrderShippingModel.objects.get(order_id=order_id)
             # Remove frete existente para substituir
-            shipping_price = Decimal(str(existing_shipping.final_price))
-            order.total = order.total - shipping_price
+            existing_shipping_price = Decimal(str(existing_shipping.final_price))
             existing_shipping.delete()
         except OrderShippingModel.DoesNotExist:
             pass
         
+        # Calcula o desconto atual (se houver)
+        # O desconto é a diferença entre subtotal e total (sem considerar frete)
+        # Se já existe frete, precisa removê-lo do total antes de calcular o desconto
+        total_without_shipping = order.total - existing_shipping_price
+        current_discount = order.subtotal - total_without_shipping
+        if current_discount < Decimal('0.00'):
+            current_discount = Decimal('0.00')
+        
+        # Calcula o total dos produtos com desconto (sem frete)
+        products_total_with_discount = order.subtotal - current_discount
+        
         # Calcula preço final do frete
         shipping_price = Decimal(str(shipping_data.get('custom_price') or shipping_data['price']))
         
-        # Atualiza o total do pedido (subtotal + frete)
-        new_total = order.subtotal + shipping_price
+        # Atualiza o total do pedido: (subtotal - desconto) + frete
+        new_total = products_total_with_discount + shipping_price
         order.total = new_total
         order.updated_at = datetime.now(timezone.utc)
         
@@ -629,7 +754,7 @@ class OrderService:
             'confirmed_at': updated_order.confirmed_at.isoformat() if updated_order.confirmed_at else None
         }
     
-    def _serialize_client(self, client: 'Client') -> Dict[str, Any]:
+    def _serialize_client(self, client: ClientEntity) -> Dict[str, Any]:
         """Serializa entidade Client para Dict"""
         address_data = {}
         if client.address:

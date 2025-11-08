@@ -179,7 +179,7 @@ def _deserialize_client(client_data: Dict) -> Any:
 
 def _deserialize_order(order_data: Dict, client: Any) -> Any:
     """Deserializa dados do pedido para entidade"""
-    from modules.pedido.domain.entities.order_entity import Order, OrderItem
+    from modules.pedido.domain.entities.order_entity import Order, OrderItem, OrderShipping
     from decimal import Decimal
     from datetime import datetime, timezone
     
@@ -207,6 +207,22 @@ def _deserialize_order(order_data: Dict, client: Any) -> Any:
     if order_data.get('confirmed_at'):
         confirmed_at = datetime.fromisoformat(order_data['confirmed_at'].replace('Z', '+00:00'))
     
+    shipping = None
+    shipping_data = order_data.get('shipping')
+    if shipping_data:
+        shipping = OrderShipping(
+            service_id=shipping_data.get('service_id'),
+            service_name=shipping_data.get('service_name', ''),
+            price=Decimal(str(shipping_data.get('price', 0))),
+            custom_price=Decimal(str(shipping_data.get('custom_price'))) if shipping_data.get('custom_price') is not None else None,
+            delivery_time=shipping_data.get('delivery_time', 0),
+            custom_delivery_time=shipping_data.get('custom_delivery_time'),
+            currency=shipping_data.get('currency', 'BRL'),
+            company=shipping_data.get('company'),
+            from_postal_code=shipping_data.get('from_postal_code'),
+            to_postal_code=shipping_data.get('to_postal_code')
+        )
+
     return Order(
         id=order_data.get('id'),
         client=client,
@@ -218,6 +234,7 @@ def _deserialize_order(order_data: Dict, client: Any) -> Any:
         notes=order_data.get('notes'),
         created_at=created_at,
         updated_at=updated_at,
-        confirmed_at=confirmed_at
+        confirmed_at=confirmed_at,
+        shipping=shipping
     )
 

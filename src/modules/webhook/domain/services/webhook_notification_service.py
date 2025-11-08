@@ -987,6 +987,25 @@ class WebhookNotificationService:
             for item in order.items
         ]
         
+        shipping_data = None
+        shipping_price = None
+        if hasattr(order, 'shipping') and order.shipping:
+            shipping_data = {
+                'service_id': order.shipping.service_id,
+                'service_name': order.shipping.service_name,
+                'price': float(order.shipping.price),
+                'custom_price': float(order.shipping.custom_price) if order.shipping.custom_price is not None else None,
+                'final_price': float(order.shipping.final_price),
+                'delivery_time': order.shipping.delivery_time,
+                'custom_delivery_time': order.shipping.custom_delivery_time,
+                'final_delivery_time': order.shipping.final_delivery_time,
+                'currency': order.shipping.currency,
+                'company': order.shipping.company,
+                'from_postal_code': order.shipping.from_postal_code,
+                'to_postal_code': order.shipping.to_postal_code
+            }
+            shipping_price = float(order.shipping.final_price)
+
         return {
             'id': str(order.id),
             'external_reference': order.external_reference,
@@ -997,7 +1016,9 @@ class WebhookNotificationService:
             'created_at': order.created_at.isoformat() if order.created_at else None,
             'updated_at': order.updated_at.isoformat() if order.updated_at else None,
             'confirmed_at': order.confirmed_at.isoformat() if order.confirmed_at else None,
-            'items': items_data
+            'items': items_data,
+            'shipping': shipping_data,
+            'shipping_price': shipping_price
         }
     
     def _serialize_client_for_email(self, client: Any) -> Dict[str, Any]:

@@ -1,7 +1,47 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from decimal import Decimal
 from modules.cliente.domain.entities.client_entity import Client as ClientEntity
+
+
+class OrderShipping:
+    """
+    Entidade para representar o frete associado a um pedido
+    """
+
+    def __init__(
+        self,
+        service_id: int,
+        service_name: str,
+        price: Decimal,
+        custom_price: Optional[Decimal] = None,
+        delivery_time: int = 0,
+        custom_delivery_time: Optional[int] = None,
+        currency: str = 'BRL',
+        company: Optional[Dict[str, Any]] = None,
+        from_postal_code: Optional[str] = None,
+        to_postal_code: Optional[str] = None
+    ):
+        self.service_id = service_id
+        self.service_name = service_name
+        self.price = price
+        self.custom_price = custom_price
+        self.delivery_time = delivery_time
+        self.custom_delivery_time = custom_delivery_time
+        self.currency = currency
+        self.company = company or {}
+        self.from_postal_code = from_postal_code
+        self.to_postal_code = to_postal_code
+
+    @property
+    def final_price(self) -> Decimal:
+        """Retorna o preço final considerando custom_price quando disponível"""
+        return self.custom_price if self.custom_price is not None else self.price
+
+    @property
+    def final_delivery_time(self) -> int:
+        """Retorna o prazo final considerando custom_delivery_time quando disponível"""
+        return self.custom_delivery_time if self.custom_delivery_time is not None else self.delivery_time
 
 
 class OrderItem:
@@ -45,7 +85,8 @@ class Order:
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
         confirmed_at: Optional[datetime] = None,
-        active: bool = True
+        active: bool = True,
+        shipping: Optional[OrderShipping] = None
     ):
         self.id = id
         self.client = client
@@ -59,6 +100,7 @@ class Order:
         self.updated_at = updated_at
         self.confirmed_at = confirmed_at
         self.active = active
+        self.shipping = shipping
     
     def __repr__(self):
         return f"<Order {self.external_reference or self.id} - {self.client.name} - R$ {self.total}>"

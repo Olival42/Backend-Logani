@@ -1,6 +1,14 @@
 from typing import Optional, List
-from modules.pedido.domain.entities.order_entity import Order as OrderEntity, OrderItem as OrderItemEntity
-from modules.pedido.adapters.persistence.models import Order as OrderModel, OrderItem as OrderItemModel
+from modules.pedido.domain.entities.order_entity import (
+    Order as OrderEntity,
+    OrderItem as OrderItemEntity,
+    OrderShipping as OrderShippingEntity
+)
+from modules.pedido.adapters.persistence.models import (
+    Order as OrderModel,
+    OrderItem as OrderItemModel,
+    OrderShipping as OrderShippingModel
+)
 from modules.pedido.domain.repositories.order_repository import IOrderRepository
 from modules.cliente.adapters.persistence.models import Client as ClientModel
 from modules.cliente.adapters.persistence.client_repository_django import ClientRepository
@@ -174,6 +182,26 @@ class OrderRepository(IOrderRepository):
             )
             items.append(item)
         
+        shipping_entity = None
+        try:
+            shipping_model = model.shipping
+        except OrderShippingModel.DoesNotExist:
+            shipping_model = None
+
+        if shipping_model:
+            shipping_entity = OrderShippingEntity(
+                service_id=shipping_model.service_id,
+                service_name=shipping_model.service_name,
+                price=Decimal(str(shipping_model.price)),
+                custom_price=Decimal(str(shipping_model.custom_price)) if shipping_model.custom_price is not None else None,
+                delivery_time=shipping_model.delivery_time,
+                custom_delivery_time=shipping_model.custom_delivery_time,
+                currency=shipping_model.currency,
+                company=shipping_model.company or {},
+                from_postal_code=shipping_model.from_postal_code,
+                to_postal_code=shipping_model.to_postal_code
+            )
+
         return OrderEntity(
             id=str(model.id),
             client=client_entity,
@@ -186,6 +214,7 @@ class OrderRepository(IOrderRepository):
             created_at=model.created_at,
             updated_at=model.updated_at,
             confirmed_at=model.confirmed_at,
-            active=model.active
+            active=model.active,
+            shipping=shipping_entity
         )
 

@@ -20,6 +20,60 @@ class EmailService:
     def __init__(self):
         self.owner_email = settings.OWNER_EMAIL
     
+    def _build_shipping_details(self, order: Order) -> str:
+        """
+        Monta uma descrição textual com os dados do frete associado ao pedido.
+        """
+        shipping = getattr(order, 'shipping', None)
+
+        if not shipping:
+            return (
+                "Nenhum frete selecionado até o momento.\n"
+                "✓ Realizar a cotação no Melhor Envio ou atualizar o pedido quando houver definição."
+            )
+
+        company_info = shipping.company or {}
+        company_name = (
+            company_info.get('name')
+            or company_info.get('fantasy_name')
+            or company_info.get('legal_name')
+            or company_info.get('razao_social')
+            or "Não informado"
+        )
+        company_document = (
+            company_info.get('document')
+            or company_info.get('cnpj')
+            or company_info.get('cpf')
+        )
+
+        lines = [
+            f"Serviço: {shipping.service_name} (ID: {shipping.service_id})",
+            f"Transportadora: {company_name}",
+        ]
+
+        if company_document:
+            lines.append(f"Documento: {company_document}")
+
+        lines.append(f"Valor final aplicado: R$ {shipping.final_price:.2f} {shipping.currency}")
+        if shipping.custom_price is not None and shipping.custom_price != shipping.price:
+            lines.append(f"⚠️ Valor base da cotação: R$ {shipping.price:.2f} {shipping.currency}")
+            lines.append(f"⚠️ Valor customizado informado: R$ {shipping.custom_price:.2f} {shipping.currency}")
+        else:
+            lines.append(f"Valor base da cotação: R$ {shipping.price:.2f} {shipping.currency}")
+
+        lines.append(f"Prazo estimado: {shipping.final_delivery_time} dia(s)")
+        if shipping.custom_delivery_time is not None and shipping.custom_delivery_time != shipping.delivery_time:
+            lines.append(f"⚠️ Prazo base informado pelo Melhor Envio: {shipping.delivery_time} dia(s)")
+
+        lines.append(f"CEP de origem: {shipping.from_postal_code or 'Não informado'}")
+        lines.append(f"CEP de destino: {shipping.to_postal_code or 'Não informado'}")
+
+        tracking_site = company_info.get('website') or company_info.get('url')
+        if tracking_site:
+            lines.append(f"Site para rastreio/contratação: {tracking_site}")
+
+        return "\n".join(lines)
+    
     def send_order_confirmed_email(self, order: Order, client: Client) -> bool:
         """
         Envia email de notificação quando um pedido é confirmado
@@ -110,6 +164,7 @@ CEP: {client.address.postal_code}
         date_str = confirmed_at_brazil.strftime('%d/%m/%Y às %H:%M')
         
         # Monta a mensagem completa focada em logística
+        shipping_details = self._build_shipping_details(order)
         message = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
               NOVO PEDIDO PARA ENVIO - FRETE
@@ -126,6 +181,13 @@ Observacoes: {order.notes or 'Nenhuma'}
 PRODUTOS PARA EMBALAR:
 
 {items_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FRETE SELECIONADO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{shipping_details}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -236,6 +298,7 @@ CEP: {client.address.postal_code}
             created_at_str = created_at_brazil.strftime('%d/%m/%Y às %H:%M')
         
         # Monta a mensagem completa
+        shipping_details = self._build_shipping_details(order)
         message = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
               PEDIDO CANCELADO - NOTIFICACAO
@@ -265,6 +328,12 @@ PRODUTOS DO PEDIDO CANCELADO:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {items_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DETALHES DO FRETE COTADO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{shipping_details}
 
 ⚠️ ACAO NECESSARIA ⚠️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -352,6 +421,7 @@ Por favor, tome as providências necessárias.
             created_at_str = created_at_brazil.strftime('%d/%m/%Y às %H:%M')
         
         # Monta a mensagem completa
+        shipping_details = self._build_shipping_details(order)
         message = f"""
 Olá {client.name},
 
@@ -371,6 +441,12 @@ PRODUTOS DO PEDIDO:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {items_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRETE QUE HAVIA SIDO COTADO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{shipping_details}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OBSERVAÇÕES:
@@ -482,6 +558,7 @@ Status do Estorno: Processado com sucesso
 """
         
         # Monta a mensagem completa
+        shipping_details = self._build_shipping_details(order)
         message = f"""
 Olá {client.name},
 
@@ -503,6 +580,12 @@ PRODUTOS DO PEDIDO:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {items_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRETE QUE FOI COTADO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{shipping_details}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INFORMAÇÕES IMPORTANTES:

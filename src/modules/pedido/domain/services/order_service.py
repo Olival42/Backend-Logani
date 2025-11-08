@@ -219,54 +219,103 @@ class OrderService:
         # Busca pagamentos do pedido
         payments = _get_payments_for_order(order_id)
         refund_results = []
+        processed_installments = set()
+        payment_repository = None
+        
+        if payments:
+            from modules.pagamento.adapters.persistence.payment_repository_django import PaymentRepository
+            payment_repository = PaymentRepository()
         
         # Se deve estornar e existem pagamentos, processa estorno
+        asaas_client = None
         if should_refund and payments:
-            from modules.pagamento.adapters.persistence.payment_repository_django import PaymentRepository
             from modules.cliente.adapters.external.asaas_client import AsaasClient
-            
-            payment_repository = PaymentRepository()
             asaas_client = AsaasClient()
+        
+        for payment_data in payments:
+            payment = payment_repository.get_by_id(payment_data['id']) if payment_repository else None
+            payment_status = payment_data.get('status')
+            has_asaas_reference = payment_data.get('asaas_id') or payment_data.get('installment_id')
+            is_paid_status = payment_status in ['PAID', 'RECEIVED', 'REFUNDING']
             
-            for payment_data in payments:
-                if payment_data['status'] in ['PAID', 'RECEIVED']:
+            # Processa estorno quando solicitado e possível
+            if should_refund and asaas_client and payment and has_asaas_reference and is_paid_status:
+                is_installment = payment.installments > 1 and payment.installment_id
+                
+                if is_installment and payment.installment_id:
+                    installment_id = payment.installment_id
+                    
+                    if installment_id in processed_installments:
+                        # Já estornamos este parcelamento anteriormente, apenas garante status local
+                        if payment.status not in ['REFUNDED', 'CANCELLED']:
+                            payment.mark_as_refunded()
+                            payment_repository.update(payment)
+                        continue
+                    
                     try:
-                        # Busca o pagamento pelo ID
-                        payment = payment_repository.get_by_id(payment_data['id'])
+                        refund_response = asaas_client.refund_installment(
+                            installment_id=installment_id,
+                            description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
+                        )
                         
-                        if payment and payment.asaas_id:
-                            # Determina se é parcelado
-                            is_installment = payment.installments > 1 and payment.installment_id
-                            
-                            if is_installment:
-                                # Estorna parcelamento completo
-                                installment_id = payment.installment_id
-                                refund_response = asaas_client.refund_installment(
-                                    installment_id=installment_id,
-                                    description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
-                                )
-                                refund_results.append({
-                                    'payment_id': payment_data['id'],
-                                    'type': 'installment',
-                                    'installment_id': installment_id,
-                                    'response': refund_response
-                                })
-                            else:
-                                # Estorna pagamento único (PIX ou cartão 1 parcela)
-                                refund_response = asaas_client.refund_payment(
-                                    payment_id=payment.asaas_id,
-                                    description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
-                                )
-                                refund_results.append({
-                                    'payment_id': payment_data['id'],
-                                    'type': 'single_payment',
-                                    'response': refund_response
-                                })
+                        # Atualiza todos os pagamentos do parcelamento como estornados
+                        installment_payments = payment_repository.get_by_installment_id(installment_id)
+                        for installment_payment in installment_payments:
+                            installment_payment.mark_as_refunded()
+                            payment_repository.update(installment_payment)
+                        
+                        refund_results.append({
+                            'payment_id': payment_data['id'],
+                            'type': 'installment',
+                            'installment_id': installment_id,
+                            'status': 'REFUNDED',
+                            'response': refund_response
+                        })
+                        processed_installments.add(installment_id)
+                        continue
                     except Exception as e:
                         refund_results.append({
                             'payment_id': payment_data['id'],
+                            'type': 'installment',
+                            'installment_id': installment_id,
                             'error': str(e)
                         })
+                        continue
+                
+                if payment and payment.asaas_id:
+                    try:
+                        refund_response = asaas_client.refund_payment(
+                            payment_id=payment.asaas_id,
+                            description=f"Estorno automático por cancelamento do pedido {order.external_reference}"
+                        )
+                        
+                        payment.mark_as_refunded()
+                        payment_repository.update(payment)
+                        
+                        refund_results.append({
+                            'payment_id': payment_data['id'],
+                            'type': 'single_payment',
+                            'status': 'REFUNDED',
+                            'response': refund_response
+                        })
+                        continue
+                    except Exception as e:
+                        refund_results.append({
+                            'payment_id': payment_data['id'],
+                            'type': 'single_payment',
+                            'error': str(e)
+                        })
+            
+            # Se não foi possível estornar, tenta cancelar localmente pagamentos ainda pendentes
+            if payment and payment.status not in ['REFUNDED', 'CANCELLED']:
+                if payment.can_be_cancelled():
+                    payment.cancel()
+                    payment_repository.update(payment)
+                    refund_results.append({
+                        'payment_id': payment_data['id'],
+                        'type': 'cancelled',
+                        'status': payment.status
+                    })
         
         # Usa transação atômica para garantir que se o envio de email falhar, nada seja salvo
         with transaction.atomic():
@@ -603,6 +652,25 @@ class OrderService:
             for item in order.items
         ]
         
+        shipping_data = None
+        shipping_price = None
+        if order.shipping:
+            shipping_data = {
+                'service_id': order.shipping.service_id,
+                'service_name': order.shipping.service_name,
+                'price': float(order.shipping.price),
+                'custom_price': float(order.shipping.custom_price) if order.shipping.custom_price is not None else None,
+                'final_price': float(order.shipping.final_price),
+                'delivery_time': order.shipping.delivery_time,
+                'custom_delivery_time': order.shipping.custom_delivery_time,
+                'final_delivery_time': order.shipping.final_delivery_time,
+                'currency': order.shipping.currency,
+                'company': order.shipping.company,
+                'from_postal_code': order.shipping.from_postal_code,
+                'to_postal_code': order.shipping.to_postal_code
+            }
+            shipping_price = float(order.shipping.final_price)
+
         return {
             'id': str(order.id),
             'external_reference': order.external_reference,
@@ -613,7 +681,9 @@ class OrderService:
             'created_at': order.created_at.isoformat() if order.created_at else None,
             'updated_at': order.updated_at.isoformat() if order.updated_at else None,
             'confirmed_at': order.confirmed_at.isoformat() if order.confirmed_at else None,
-            'items': items_data
+            'items': items_data,
+            'shipping': shipping_data,
+            'shipping_price': shipping_price
         }
     
     def add_shipping_to_order(

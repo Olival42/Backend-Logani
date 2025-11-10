@@ -31,4 +31,5 @@ urlpatterns = [
     path('webhooks/', include('modules.webhook.application.web.urls')),
     path('shippings/', include('modules.frete.urls')),
     path('melhor-envio/', include('modules.frete.urls')),  # Rota alternativa para compatibilidade
+    path('emails/', include('modules.email.urls')),
 ]

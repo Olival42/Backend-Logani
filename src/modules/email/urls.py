@@ -1,8 +1,9 @@
 from django.urls import path
+from modules.email.application.web.views import ContactMessageView
 
-app_name = 'email'
+app_name = "email"
 
 urlpatterns = [
-    # URLs removidas - emails são enviados automaticamente via webhook
+    path("contact/", ContactMessageView.as_view(), name="contact-message"),
 ]
 

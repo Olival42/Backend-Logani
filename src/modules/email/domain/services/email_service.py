@@ -2,7 +2,7 @@
 Serviço de envio de emails para notificações de pedidos
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from django.core.mail import send_mail
 from django.conf import settings
 from datetime import datetime, timezone
@@ -19,6 +19,48 @@ class EmailService:
     
     def __init__(self):
         self.owner_email = settings.OWNER_EMAIL
+    
+    def send_contact_message(
+        self,
+        contact_name: str,
+        contact_email: str,
+        message: str,
+        client: Optional[Client] = None,
+    ) -> bool:
+        """
+        Envia uma mensagem de contato recebida via formulário.
+
+        Args:
+            contact_name: Nome informado no formulário.
+            contact_email: Email informado no formulário.
+            message: Mensagem escrita pelo usuário.
+            client: Cliente associado ao usuário autenticado (opcional).
+
+        Returns:
+            bool: True se o email foi enviado com sucesso.
+        """
+        try:
+            if not self.owner_email:
+                return False
+
+            subject = f"Nova mensagem de contato - {contact_name}"
+            email_body = self._build_contact_message_body(
+                contact_name=contact_name,
+                contact_email=contact_email,
+                message=message,
+                client=client,
+            )
+
+            send_mail(
+                subject=subject,
+                message=email_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[self.owner_email],
+                fail_silently=False,
+            )
+            return True
+        except Exception:
+            return False
     
     def _build_shipping_details(self, order: Order) -> str:
         """
@@ -71,6 +113,85 @@ class EmailService:
         tracking_site = company_info.get('website') or company_info.get('url')
         if tracking_site:
             lines.append(f"Site para rastreio/contratação: {tracking_site}")
+
+        return "\n".join(lines)
+
+    def _build_contact_message_body(
+        self,
+        contact_name: str,
+        contact_email: str,
+        message: str,
+        client: Optional[Client] = None,
+    ) -> str:
+        """
+        Monta o corpo do email de contato com informações do cliente autenticado.
+
+        Args:
+            contact_name: Nome informado no formulário.
+            contact_email: Email informado no formulário.
+            message: Mensagem escrita pelo usuário.
+            client: Cliente associado ao usuário autenticado (opcional).
+
+        Returns:
+            str: Corpo do email formatado.
+        """
+
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "                    NOVA MENSAGEM DE CONTATO",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "DETALHES DO FORMULÁRIO:",
+            f"- Nome informado: {contact_name}",
+            f"- Email informado: {contact_email}",
+            "",
+            "Mensagem:",
+            f"{message.strip()}",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "DADOS DO CLIENTE AUTENTICADO:",
+        ]
+
+        if client:
+            user_email = getattr(client, "email", None)
+            if not user_email and getattr(client, "user", None):
+                user_email = getattr(client.user, "email", None)
+
+            lines.extend(
+                [
+                    f"- ID interno: {client.id}",
+                    f"- Nome: {client.name}",
+                    f"- CPF: {client.cpf or 'Não informado'}",
+                    f"- Email do cliente: {user_email or 'Não informado'}",
+                    f"- Telefone: {client.phone or 'Não informado'}",
+                    f"- Celular: {client.mobile_phone or 'Não informado'}",
+                    f"- ID Asaas: {client.asaas_id or 'Não informado'}",
+                ]
+            )
+
+            address = getattr(client, "address", None)
+            if address:
+                address_parts = [
+                    f"  Endereço: {address.address or 'Não informado'}",
+                    f"  Número: {address.number or 'Não informado'}",
+                    f"  Complemento: {address.complement or 'Não informado'}",
+                    f"  Bairro: {address.province or 'Não informado'}",
+                    f"  Cidade: {address.city or 'Não informado'}",
+                    f"  Estado: {address.state or 'Não informado'}",
+                    f"  CEP: {address.postal_code or 'Não informado'}",
+                ]
+                lines.append("Endereço cadastrado:")
+                lines.extend(address_parts)
+        else:
+            lines.append("Nenhum cadastro de cliente encontrado para este usuário.")
+
+        lines.extend(
+            [
+                "",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                "Mensagem enviada automaticamente pela API Pagamento & Frete.",
+            ]
+        )
 
         return "\n".join(lines)
     

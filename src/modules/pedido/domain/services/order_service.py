@@ -844,7 +844,7 @@ class OrderService:
             'cpf': client.cpf,
             'phone': client.phone,
             'mobile_phone': client.mobile_phone,
-            'email': client.email,
+            'email': client.email or (client.user.email if getattr(client, 'user', None) else None),
             'address': address_data
         }
 

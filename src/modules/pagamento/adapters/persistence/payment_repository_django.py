@@ -173,6 +173,7 @@ class PaymentRepository(IPaymentRepository):
                 province=address_model.province
             )
         
+        user_model = getattr(client_model, 'user', None)
         client_entity = ClientEntity(
             id=str(client_model.id),
             name=client_model.name,
@@ -180,7 +181,9 @@ class PaymentRepository(IPaymentRepository):
             phone=client_model.phone or '',
             mobile_phone=client_model.mobile_phone or '',
             address=address_entity or AddressEntity('', '', '', '', '', '', ''),
-            asaas_id=client_model.asaas_id
+            user=user_model,
+            asaas_id=client_model.asaas_id,
+            email=user_model.email if user_model and getattr(user_model, 'email', None) else None
         )
         
         return Payment(

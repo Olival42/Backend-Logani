@@ -363,7 +363,8 @@ Por favor, tome as providências necessárias.
         """
         try:
             # Verifica se o cliente tem email
-            if not client.email:
+            client_email = client.email or (client.user.email if getattr(client, 'user', None) else None)
+            if not client_email:
                 print("Cliente não possui email cadastrado")
                 return False
             
@@ -377,7 +378,7 @@ Por favor, tome as providências necessárias.
                 subject=subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[client.email],
+                recipient_list=[client_email],
                 fail_silently=False,
             )
             
@@ -487,7 +488,8 @@ Equipe de Atendimento
         """
         try:
             # Verifica se o cliente tem email
-            if not client.email:
+            client_email = client.email or (client.user.email if getattr(client, 'user', None) else None)
+            if not client_email:
                 print("Cliente não possui email cadastrado")
                 return False
             
@@ -501,7 +503,7 @@ Equipe de Atendimento
                 subject=subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[client.email],
+                recipient_list=[client_email],
                 fail_silently=False,
             )
             

@@ -218,6 +218,19 @@ class CheckoutCreateView(APIView):
                     return ErrorResponse.bad_request(
                         "Valor total informado não corresponde à soma dos itens do checkout."
                     )
+            
+            # Garante que o customer informado pertence ao cliente autenticado
+            customer_id = validated_data.get('customer')
+            client_asaas_id = getattr(client, 'asaas_id', None)
+            if client_asaas_id:
+                if not customer_id:
+                    return ErrorResponse.bad_request(
+                        "O campo 'customer' é obrigatório para checkouts manuais."
+                    )
+                if str(client_asaas_id) != str(customer_id):
+                    return ErrorResponse.bad_request(
+                        "O customer informado não corresponde ao cliente autenticado."
+                    )
         
         # Se externalReference foi informado e não tem value/items, busca do pedido
         if validated_data.get('externalReference') and not validated_data.get('value'):
@@ -464,9 +477,11 @@ class CheckoutDetailView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
 
         # Busca o checkout
         checkout_service = CheckoutService(CheckoutRepository())
@@ -475,6 +490,9 @@ class CheckoutDetailView(APIView):
             
             if not checkout:
                 return ErrorResponse.not_found("Checkout não encontrado")
+            
+            if str(checkout.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Checkout não pertence ao cliente autenticado.")
             
             # Serializa os dados
             serializer = CheckoutDetailSerializer({
@@ -534,13 +552,21 @@ class CheckoutCancelView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
 
         # Cancelamento do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
+            checkout = checkout_service.get_checkout(checkout_id)
+            if not checkout:
+                return ErrorResponse.not_found("Checkout não encontrado")
+            if str(checkout.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Checkout não pertence ao cliente autenticado.")
+
             result = checkout_service.cancel_checkout(checkout_id)
             
             return SuccessResponse.ok(
@@ -578,13 +604,21 @@ class CheckoutSyncView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            _, client = _authenticate_and_get_client(user_service, token)
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+        except LookupError as e:
+            return ErrorResponse.not_found(str(e))
 
         # Sincronização do checkout
         checkout_service = CheckoutService(CheckoutRepository())
         try:
+            checkout = checkout_service.get_checkout(checkout_id)
+            if not checkout:
+                return ErrorResponse.not_found("Checkout não encontrado")
+            if str(checkout.client.id) != str(client.id):
+                return ErrorResponse.forbidden("Checkout não pertence ao cliente autenticado.")
+
             result = checkout_service.sync_checkout_status(checkout_id)
             
             return SuccessResponse.ok(

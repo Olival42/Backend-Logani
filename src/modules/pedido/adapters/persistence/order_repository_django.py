@@ -155,9 +155,8 @@ class OrderRepository(IOrderRepository):
             )
         
         # Obtém o email do usuário se existir
-        client_email = None
-        if client_model.user and hasattr(client_model.user, 'email'):
-            client_email = client_model.user.email
+        user_model = getattr(client_model, 'user', None)
+        client_email = user_model.email if user_model and hasattr(user_model, 'email') else None
         
         client_entity = ClientEntity(
             id=str(client_model.id),
@@ -166,6 +165,7 @@ class OrderRepository(IOrderRepository):
             phone=client_model.phone or '',
             mobile_phone=client_model.mobile_phone or '',
             address=address_entity or AddressEntity('', '', '', '', '', '', ''),
+            user=user_model,
             asaas_id=client_model.asaas_id,
             email=client_email
         )

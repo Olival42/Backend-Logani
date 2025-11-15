@@ -15,13 +15,29 @@ from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 
-load_dotenv() 
+load_dotenv()
 
-REDIS_HOST = os.getenv("REDIS_HOST") 
-REDIS_PORT = os.getenv("REDIS_PORT") 
-REDIS_DB = os.getenv("REDIS_DB") 
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
-r = redis.Redis(host=str(REDIS_HOST), port=int(REDIS_PORT), db=int(REDIS_DB)) 
+MAX_LOGIN_ATTEMPTS = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
+LOCK_TIME_SECONDS = int(os.getenv("LOCK_TIME_SECONDS", "900"))
+def _get_redis_client() -> redis.Redis | None:
+    try:
+        return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_timeout=2)
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Não foi possível conectar ao Redis (%s:%s/%s): %s. Prosseguindo sem rate limit.",
+            REDIS_HOST,
+            REDIS_PORT,
+            REDIS_DB,
+            e,
+        )
+        return None
+
+
+r = _get_redis_client()
 
 MAX_LOGIN_ATTEMPTS = int(os.getenv("MAX_LOGIN_ATTEMPTS")) 
 LOCK_TIME_SECONDS = int(os.getenv("LOCK_TIME_SECONDS"))
@@ -63,21 +79,41 @@ class UserService:
         }
 
     def login_user(self, email: str, password: str) -> dict: 
-        user = self.user_repo.find_by_email(email) 
+        user = self.user_repo.find_by_email(email)
+        attempts_key = f"login_attempts:{email}"
+
+        attempts = None
+        if r:
+            try:
+                cached_attempts = r.get(attempts_key)
+                if cached_attempts is not None:
+                    attempts = int(cached_attempts)
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Falha ao consultar tentativas de login no Redis: %s", e
+                )
+
+        if attempts is not None and attempts >= MAX_LOGIN_ATTEMPTS:
+            raise ValueError("Conta temporariamente bloqueada. Tente novamente mais tarde.")
         
-        attempts_key = f"login_attempts:{email}" 
+        if not user or not User.verify_password(password, user.password):
+            if r:
+                try:
+                    r.incr(attempts_key)
+                    r.expire(attempts_key, LOCK_TIME_SECONDS)
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "Falha ao atualizar tentativas de login no Redis: %s", e
+                    )
+            raise ValueError("Email ou senha inválidos")
         
-        attempts = r.get(attempts_key) 
-        
-        if attempts and int(attempts) >= MAX_LOGIN_ATTEMPTS: 
-            raise ValueError("Conta temporariamente bloqueada. Tente novamente mais tarde.") 
-        
-        if not user or not User.verify_password(password, user.password): 
-            r.incr(attempts_key) 
-            r.expire(attempts_key, LOCK_TIME_SECONDS) 
-            raise ValueError("Email ou senha inválidos") 
-        
-        r.delete(attempts_key) 
+        if r:
+            try:
+                r.delete(attempts_key)
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Falha ao limpar tentativas de login no Redis: %s", e
+                )
         
         access_token = Jwt_Utils.create_access_token(user.id, user.email) 
         refresh_token = Jwt_Utils.create_refresh_token(user.id, user.email) 

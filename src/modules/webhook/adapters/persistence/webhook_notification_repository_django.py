@@ -54,6 +54,44 @@ class WebhookNotificationRepository:
         except WebhookNotificationModel.DoesNotExist:
             return None
     
+    def exists_by_unique_key(self, payment_id: Optional[str] = None, installment_id: Optional[str] = None, event: Optional[str] = None) -> bool:
+        """
+        Verifica se já existe uma notificação com a mesma combinação de payment_id, installment_id e event
+        Usado para deduplicação de notificações
+        
+        Args:
+            payment_id: ID do pagamento (opcional)
+            installment_id: ID da parcela (opcional)
+            event: Tipo de evento (opcional)
+            
+        Returns:
+            bool: True se a notificação já existe, False caso contrário
+        """
+        try:
+            query = WebhookNotificationModel.objects.all()
+            
+            # Filtra por payment_id se fornecido
+            if payment_id:
+                query = query.filter(payment_id=payment_id)
+            
+            # Filtra por installment_id se fornecido
+            if installment_id:
+                query = query.filter(installment_id=installment_id)
+            else:
+                # Se installment_id não foi fornecido, verifica se é None no banco
+                query = query.filter(installment_id__isnull=True)
+            
+            # Filtra por event se fornecido
+            if event:
+                query = query.filter(event=event)
+            
+            # Verifica se existe pelo menos uma notificação que corresponda aos critérios
+            return query.exists()
+            
+        except Exception:
+            # Em caso de erro, retorna False para não bloquear o processamento
+            return False
+    
     def get_by_external_reference(self, external_reference: str) -> list:
         """Busca notificações por external_reference"""
         models = WebhookNotificationModel.objects.filter(

@@ -46,12 +46,19 @@ class WebhookNotificationService:
         event = data.get('event', 'UNKNOWN')
         payment = data.get('payment', {})
         
+        payment_id = payment.get('id')
+        installment_id = payment.get('installment')
+
+        # Deduplicação: evita processar notificações repetidas
+        if self.notification_repository.exists_by_unique_key(payment_id, installment_id, event):
+            raise ValueError("Notificação duplicada recebida")
+
         notification = WebhookNotification(
             id=str(uuid4()),
             event=event,
-            payment_id=payment.get('id'),
+            payment_id=payment_id,
             subscription_id=payment.get('subscription'),
-            installment_id=payment.get('installment'),
+            installment_id=installment_id,
             customer_id=payment.get('customer'),
             payment_date=self._parse_datetime(payment.get('paymentDate')),
             due_date=self._parse_datetime(payment.get('dueDate')),

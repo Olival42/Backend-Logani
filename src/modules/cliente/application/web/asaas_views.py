@@ -197,9 +197,17 @@ class AsaasClientSyncView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            payload = user_service.authenticate(token)
+            user_id = payload["user_id"]
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+
+        client_repository = ClientRepository()
+        client = client_repository.get_by_user_id(str(user_id))
+        if not client:
+            return ErrorResponse.not_found("Cliente não encontrado para o usuário autenticado")
+        if str(client.id) != str(client_id):
+            return ErrorResponse.forbidden("Cliente não pertence ao usuário autenticado.")
 
         # Sincronização
         asaas_service = AsaasClientService()
@@ -253,9 +261,17 @@ class AsaasClientDetailView(APIView):
         user_service = UserService(UserRepository(), BlacklistRepository())
         
         try:
-            user_service.authenticate(token)
+            payload = user_service.authenticate(token)
+            user_id = payload["user_id"]
         except ValueError as e:
             return ErrorResponse.unauthorized(str(e))
+
+        client_repository = ClientRepository()
+        client = client_repository.get_by_user_id(str(user_id))
+        if not client:
+            return ErrorResponse.not_found("Cliente não encontrado para o usuário autenticado")
+        if str(client.id) != str(client_id):
+            return ErrorResponse.forbidden("Cliente não pertence ao usuário autenticado.")
 
         # Consulta no Asaas usando ID local
         asaas_service = AsaasClientService()

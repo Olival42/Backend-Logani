@@ -12,15 +12,15 @@ class CouponService:
     # Mock de cupons disponíveis
     # Em produção, isso viria de um banco de dados
     MOCK_COUPONS = {
-        'DESCONTO10': {
-            'code': 'DESCONTO10',
+        'DESCONTO94': {
+            'code': 'DESCONTO94',
             'discount_type': 'PERCENTAGE',  # PERCENTAGE ou FIXED
-            'discount_value': Decimal('10.00'),  # 10% ou R$ 10,00
+            'discount_value': Decimal('94.00'),  # 10% ou R$ 10,00
             'min_value': None,  # Valor mínimo do pedido
             'max_discount': None,  # Desconto máximo (para percentual)
             'expires_at': None,  # None = sem expiração
             'active': True,
-            'description': 'Desconto de 10%'
+            'description': 'Desconto de 94%'
         }
     }
     
@@ -74,10 +74,10 @@ class CouponService:
             coupon['max_discount'] = Decimal(str(max_discount))
         
         # Validação especial para DESCONTO10: apenas primeira compra
-        if coupon_code == 'DESCONTO10' and client_id:
+        if coupon_code == 'DESCONTO94' and client_id:
             if not self._is_first_purchase(client_id):
                 raise ValueError(
-                    "O cupom DESCONTO10 é válido apenas para a primeira compra. "
+                    "O cupom DESCONTO94 é válido apenas para a primeira compra. "
                     "Você já possui compras anteriores."
                 )
         

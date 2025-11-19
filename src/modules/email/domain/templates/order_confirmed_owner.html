@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Novo pedido confirmado</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #fbf8f2;
+        color: #4c4b45;
+        font-family: "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+      }
+      table {
+        border-spacing: 0;
+      }
+      .wrapper {
+        width: 100%;
+        padding: 32px 12px;
+        background: linear-gradient(180deg, #fdfbf6 0%, #f5f1ea 100%);
+      }
+      .container {
+        max-width: 720px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 18px 35px rgba(57, 56, 52, 0.08);
+      }
+      .hero {
+        background-color: #f3eee6;
+        padding: 32px 32px 44px;
+        text-align: center;
+      }
+      .brand {
+        font-size: 26px;
+        letter-spacing: 0.4rem;
+        font-weight: 600;
+        color: #4c4b45;
+        margin: 0 0 4px;
+      }
+      .brand-logo {
+        max-width: 220px;
+        height: auto;
+        display: inline-block;
+        margin-bottom: 6px;
+      }
+      .subtitle {
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.3rem;
+        color: #a18c7c;
+        margin-bottom: 8px;
+      }
+      .hero h1 {
+        font-weight: 300;
+        letter-spacing: 0.18rem;
+        color: #4c4b45;
+        margin: 10px 0 0;
+        font-size: 20px;
+      }
+      .content {
+        padding: 40px 40px 32px;
+      }
+      .section {
+        margin-bottom: 28px;
+      }
+      .section-title {
+        font-size: 12px;
+        letter-spacing: 0.25rem;
+        text-transform: uppercase;
+        color: #8a7b6f;
+        margin-bottom: 10px;
+      }
+      .card {
+        background: #f9f6f1;
+        border-radius: 14px;
+        padding: 18px 22px;
+      }
+      .info-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        font-size: 14px;
+      }
+      .info-list li {
+        display: flex;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(138, 123, 111, 0.18);
+        padding: 8px 0;
+      }
+      .info-list li:last-child {
+        border-bottom: none;
+      }
+      .label {
+        text-transform: uppercase;
+        letter-spacing: 0.15rem;
+        font-size: 11px;
+        color: #8a7b6f;
+      }
+      .value {
+        font-weight: 600;
+        color: #4c4b45;
+      }
+      .items-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .items-table th,
+      .items-table td {
+        padding: 8px 4px;
+        text-align: left;
+        border-bottom: 1px solid rgba(138, 123, 111, 0.18);
+      }
+      .items-table th {
+        text-transform: uppercase;
+        letter-spacing: 0.12rem;
+        font-size: 11px;
+        color: #8a7b6f;
+      }
+      .pill {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background-color: #efe5d7;
+        color: #7b6653;
+        font-size: 11px;
+        letter-spacing: 0.15rem;
+        text-transform: uppercase;
+      }
+      .footer {
+        text-align: center;
+        padding: 0 40px 32px;
+        font-size: 11px;
+        color: #9c8e83;
+      }
+      .footer strong {
+        letter-spacing: 0.35rem;
+        display: inline-block;
+        margin-bottom: 4px;
+        color: #4c4b45;
+      }
+      @media (max-width: 640px) {
+        .content {
+          padding: 32px 24px 24px;
+        }
+        .items-table th,
+        .items-table td {
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <table role="presentation" width="100%">
+        <tr>
+          <td align="center">
+            <div class="container">
+              <div class="hero">
+                <p class="subtitle">Novo pedido confirmado</p>
+                ${brand_element}
+                <h1>Pedido ${order_reference}</h1>
+              </div>
+              <div class="content">
+                <div class="section">
+                  <div class="section-title">Resumo do pedido</div>
+                  <div class="card">
+                    <ul class="info-list">
+                      <li>
+                        <span class="label">Data / hora</span>
+                        <span class="value">${date_str}</span>
+                      </li>
+                      <li>
+                        <span class="label">Cliente</span>
+                        <span class="value">${client_name}</span>
+                      </li>
+                      <li>
+                        <span class="label">Valor total</span>
+                        <span class="value">R$ ${total}</span>
+                      </li>
+                      <li>
+                        <span class="label">Itens</span>
+                        <span class="value">${total_items} unidade(s)</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Produtos para embalar</div>
+                  <div class="card">
+                    ${items_html}
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Frete selecionado</div>
+                  <div class="card">
+                    ${shipping_html}
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Endereço de entrega</div>
+                  <div class="card">
+                    ${address_html}
+                  </div>
+                </div>
+
+                <div class="section">
+                  <div class="section-title">Ações recomendadas</div>
+                  <div class="card">
+                    <p style="margin: 0 0 10px; font-size: 13px; color: #4c4b45">
+                      <span class="pill">Importante</span>
+                    </p>
+                    <ul style="padding-left: 18px; margin: 0; font-size: 13px; line-height: 1.7;">
+                      <li>Confirmar com o cliente endereço e valor do frete a pagar.</li>
+                      <li>Separar e embalar os produtos listados.</li>
+                      <li>Preparar o pedido para envio de acordo com o frete selecionado.</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div class="footer">
+                <strong>LOGANI</strong>
+                <div>Notificação automática de pedido confirmado.</div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </body>
+</html>
+
+

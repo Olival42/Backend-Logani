@@ -2,12 +2,19 @@
 Serviço de envio de emails para notificações de pedidos
 """
 
-from typing import List, Dict, Optional
-from django.core.mail import send_mail
+from typing import List, Dict, Optional, Tuple
+from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
 from datetime import datetime, timezone
 import pytz
 import os
+from dataclasses import dataclass
+from pathlib import Path
+from string import Template
+from html import escape
+from email.mime.image import MIMEImage
+from email.mime.base import MIMEBase
+from email import encoders
 from modules.pedido.domain.entities.order_entity import Order
 from modules.cliente.domain.entities.client_entity import Client
 
@@ -19,6 +26,12 @@ class EmailService:
     
     def __init__(self):
         self.owner_email = settings.OWNER_EMAIL
+        self.templates_dir = (
+            Path(__file__).resolve().parent.parent / "templates"
+        )
+        # Garante que a pasta exista para facilitar deploys limpos
+        self.templates_dir.mkdir(parents=True, exist_ok=True)
+        self.assets_dir = self.templates_dir / "img"
     
     def send_contact_message(
         self,
@@ -44,19 +57,18 @@ class EmailService:
                 return False
 
             subject = f"Nova mensagem de contato - {contact_name}"
-            email_body = self._build_contact_message_body(
+            text_body, html_body, inline_assets = self._build_contact_message_payload(
                 contact_name=contact_name,
                 contact_email=contact_email,
                 message=message,
                 client=client,
             )
-
-            send_mail(
+            self._send_email_with_html(
                 subject=subject,
-                message=email_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[self.owner_email],
-                fail_silently=False,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[self.owner_email],
+                inline_assets=inline_assets,
             )
             return True
         except Exception:
@@ -116,15 +128,102 @@ class EmailService:
 
         return "\n".join(lines)
 
-    def _build_contact_message_body(
+    def _render_email_template(self, template_name: str, context: Dict[str, str]) -> str:
+        """
+        Carrega e renderiza um template HTML simples usando string.Template.
+        """
+        template_path = self.templates_dir / template_name
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template não encontrado: {template_path}")
+
+        template_content = template_path.read_text(encoding="utf-8")
+        template = Template(template_content)
+        return template.safe_substitute(**context)
+
+    @dataclass
+    class InlineAsset:
+        cid: str
+        filename: str
+        content: bytes
+        mime_type: str
+
+    def _load_binary_asset(self, asset_name: str) -> Optional[bytes]:
+        """
+        Retorna o conteúdo binário de um ativo, se existir.
+        """
+        asset_path = self.assets_dir / asset_name
+        if not asset_path.exists():
+            return None
+        return asset_path.read_bytes()
+
+    def _build_branding(self) -> Tuple[str, List["EmailService.InlineAsset"]]:
+        """
+        Retorna o bloco HTML da marca e os ativos inline necessários.
+        """
+        inline_assets: List[EmailService.InlineAsset] = []
+        brand_element = '<p class="brand">LOGANI</p>'
+        logo_bytes = self._load_binary_asset("logo.png")
+        if logo_bytes:
+            brand_element = (
+                '<img src="cid:logo_inline" alt="Logani" class="brand-logo" />'
+            )
+            inline_assets.append(
+                EmailService.InlineAsset(
+                    cid="logo_inline",
+                    filename="logo.png",
+                    content=logo_bytes,
+                    mime_type="image/png",
+                )
+            )
+        return brand_element, inline_assets
+
+    def _send_email_with_html(
+        self,
+        subject: str,
+        text_body: str,
+        html_body: str,
+        recipients: List[str],
+        inline_assets: Optional[List["EmailService.InlineAsset"]] = None,
+    ) -> None:
+        """
+        Envia um email com versões em texto e HTML, anexando imagens inline se necessário.
+        """
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=text_body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=recipients,
+        )
+        email.attach_alternative(html_body, "text/html")
+
+        if inline_assets:
+            email.mixed_subtype = "related"
+            for asset in inline_assets:
+                maintype, subtype = asset.mime_type.split("/", 1)
+                if maintype == "image":
+                    part = MIMEImage(asset.content, _subtype=subtype)
+                else:
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(asset.content)
+                    encoders.encode_base64(part)
+
+                part.add_header("Content-ID", f"<{asset.cid}>")
+                part.add_header(
+                    "Content-Disposition", "inline", filename=asset.filename
+                )
+                email.attach(part)
+
+        email.send(fail_silently=False)
+
+    def _build_contact_message_payload(
         self,
         contact_name: str,
         contact_email: str,
         message: str,
         client: Optional[Client] = None,
-    ) -> str:
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
         """
-        Monta o corpo do email de contato com informações do cliente autenticado.
+        Monta as versões em texto e HTML para o email de contato.
 
         Args:
             contact_name: Nome informado no formulário.
@@ -133,24 +232,29 @@ class EmailService:
             client: Cliente associado ao usuário autenticado (opcional).
 
         Returns:
-            str: Corpo do email formatado.
+            Tuple[str, str, List[InlineAsset]]: Texto, HTML e ativos inline.
         """
-
+        contact_name_value = (contact_name or "").strip() or "Não informado"
+        contact_email_value = (contact_email or "").strip() or "Não informado"
+        message_text = message.strip() or "Mensagem não informada."
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "                    NOVA MENSAGEM DE CONTATO",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             "DETALHES DO FORMULÁRIO:",
-            f"- Nome informado: {contact_name}",
-            f"- Email informado: {contact_email}",
+            f"- Nome informado: {contact_name_value}",
+            f"- Email informado: {contact_email_value}",
             "",
             "Mensagem:",
-            f"{message.strip()}",
+            f"{message_text}",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "DADOS DO CLIENTE AUTENTICADO:",
         ]
+
+        client_rows = []
+        address_rows = []
 
         if client:
             user_email = getattr(client, "email", None)
@@ -169,6 +273,16 @@ class EmailService:
                 ]
             )
 
+            client_rows = [
+                ("ID interno", str(client.id)),
+                ("Nome", client.name or "Não informado"),
+                ("CPF", client.cpf or "Não informado"),
+                ("Email do cliente", user_email or "Não informado"),
+                ("Telefone", client.phone or "Não informado"),
+                ("Celular", client.mobile_phone or "Não informado"),
+                ("ID Asaas", client.asaas_id or "Não informado"),
+            ]
+
             address = getattr(client, "address", None)
             if address:
                 address_parts = [
@@ -182,8 +296,20 @@ class EmailService:
                 ]
                 lines.append("Endereço cadastrado:")
                 lines.extend(address_parts)
+                address_rows = [
+                    ("Endereço", address.address or "Não informado"),
+                    ("Número", address.number or "Não informado"),
+                    ("Complemento", address.complement or "Não informado"),
+                    ("Bairro", address.province or "Não informado"),
+                    ("Cidade", address.city or "Não informado"),
+                    ("Estado", address.state or "Não informado"),
+                    ("CEP", address.postal_code or "Não informado"),
+                ]
         else:
             lines.append("Nenhum cadastro de cliente encontrado para este usuário.")
+            client_rows = [
+                ("Status do cadastro", "Nenhum cadastro encontrado para este usuário.")
+            ]
 
         lines.extend(
             [
@@ -193,7 +319,53 @@ class EmailService:
             ]
         )
 
-        return "\n".join(lines)
+        plain_text = "\n".join(lines)
+
+        def _build_html_list(rows: List[Tuple[str, str]]) -> str:
+            if not rows:
+                return ""
+            items = "".join(
+                f'<li><span>{escape(label)}</span><strong>{escape(str(value))}</strong></li>'
+                for label, value in rows
+            )
+            return f'<ul class="info-list">{items}</ul>'
+
+        client_block = _build_html_list(client_rows)
+        address_block = ""
+        if address_rows:
+            address_block = (
+                '<div class="section">'
+                '<div class="section-title subtle">Endereço cadastrado</div>'
+                '<div class="card">'
+                f"{_build_html_list(address_rows)}"
+                "</div>"
+                "</div>"
+            )
+        message_html = "<br>".join(
+            part or "&nbsp;" for part in escape(message_text).splitlines()
+        )
+
+        now = datetime.now(timezone.utc)
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        try:
+            html_body = self._render_email_template(
+                "contact_message.html",
+                {
+                    "contact_name": escape(contact_name_value),
+                    "contact_email": escape(contact_email_value),
+                    "message_html": message_html,
+                    "client_block": client_block,
+                    "address_block": address_block,
+                    "brand_element": brand_element,
+                    "year": str(now.year),
+                },
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(plain_text)}</pre>"
+
+        return plain_text, html_body, inline_assets
     
     def send_order_confirmed_email(self, order: Order, client: Client) -> bool:
         """
@@ -213,16 +385,16 @@ class EmailService:
             
             subject = f"Novo Pedido Confirmado - {order.external_reference}"
             
-            # Monta o corpo do email com informações completas
-            message = self._build_order_confirmed_message(order, client)
-            
-            # Envia o email
-            send_mail(
+            text_body, html_body, inline_assets = self._build_order_confirmed_payload(
+                order, client
+            )
+
+            self._send_email_with_html(
                 subject=subject,
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[self.owner_email],
-                fail_silently=False,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[self.owner_email],
+                inline_assets=inline_assets,
             )
             
             return True
@@ -330,6 +502,95 @@ Por favor, processe o pedido com urgência.
 """
         
         return message
+
+    def _build_order_confirmed_payload(
+        self, order: Order, client: Client
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
+        """
+        Retorna versões texto, HTML e ativos inline para o email de pedido confirmado.
+        """
+        plain_text = self._build_order_confirmed_message(order, client)
+        html_body, inline_assets = self._build_order_confirmed_html(order, client)
+        return plain_text, html_body, inline_assets
+
+    def _build_order_confirmed_html(
+        self, order: Order, client: Client
+    ) -> Tuple[str, List["EmailService.InlineAsset"]]:
+        """
+        Monta a versão HTML do email de pedido confirmado para o lojista.
+        """
+        # Produtos
+        rows = []
+        total_items_qty = 0
+        for item in order.items:
+            total_items_qty += item.quantity
+            rows.append(
+                f"<tr>"
+                f"<td>{escape(item.product_name)} (ID: {escape(str(item.product_id))})</td>"
+                f"<td>{item.quantity}x</td>"
+                f"<td>R$ {item.total_price:.2f}</td>"
+                f"</tr>"
+            )
+        items_html = (
+            '<table class="items-table">'
+            "<thead><tr><th>Produto</th><th>Qtd.</th><th>Total</th></tr></thead>"
+            "<tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+        # Endereço
+        if client.address:
+            complement = (
+                f", {client.address.complement}" if client.address.complement else ""
+            )
+            address_lines = [
+                escape(client.name or "Não informado"),
+                f"{escape(client.address.address or 'Não informado')}, "
+                f"{escape(str(client.address.number or 's/n'))}{escape(complement)}",
+                escape(client.address.province or "Bairro não informado"),
+                f"{escape(client.address.city or 'Cidade?')} - "
+                f"{escape(client.address.state or 'UF?')}",
+                f"CEP: {escape(client.address.postal_code or 'Não informado')}",
+            ]
+            address_html = "<br>".join(address_lines)
+        else:
+            address_html = "Endereço não informado."
+
+        # Datas e frete
+        brazil_tz = pytz.timezone("America/Sao_Paulo")
+        confirmed_at_brazil = order.confirmed_at.astimezone(brazil_tz)
+        date_str = confirmed_at_brazil.strftime("%d/%m/%Y às %H:%M")
+
+        shipping_details = self._build_shipping_details(order)
+        shipping_html = "<br>".join(
+            [escape(line) for line in shipping_details.splitlines() if line.strip()]
+        )
+
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        context = {
+            "brand_element": brand_element,
+            "order_reference": escape(order.external_reference or "—"),
+            "date_str": date_str,
+            "client_name": escape(client.name or "Não informado"),
+            "total": f"{order.total:.2f}",
+            "total_items": str(total_items_qty),
+            "items_html": items_html,
+            "shipping_html": shipping_html,
+            "address_html": address_html,
+        }
+
+        try:
+            html_body = self._render_email_template(
+                "order_confirmed_owner.html", context
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(self._build_order_confirmed_message(order, client))}</pre>"
+            inline_assets = []
+
+        return html_body, inline_assets
     
     def send_order_cancelled_email(self, order: Order, client: Client, refund_info: List[Dict] = None) -> bool:
         """
@@ -350,18 +611,17 @@ Por favor, processe o pedido com urgência.
             
             subject = f"Pedido Cancelado - {order.external_reference}"
             
-            # Monta o corpo do email com informações completas
-            message = self._build_order_cancelled_message(order, client, refund_info)
-            
-            # Envia o email
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[self.owner_email],
-                fail_silently=False,
+            text_body, html_body, inline_assets = self._build_order_cancelled_payload(
+                order, client, refund_info
             )
-            
+
+            self._send_email_with_html(
+                subject=subject,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[self.owner_email],
+                inline_assets=inline_assets,
+            )
             return True
             
         except Exception as e:
@@ -470,6 +730,111 @@ Por favor, tome as providências necessárias.
 """
         
         return message
+
+    def _build_order_cancelled_payload(
+        self, order: Order, client: Client, refund_info: List[Dict] = None
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
+        plain_text = self._build_order_cancelled_message(order, client, refund_info)
+        html_body, inline_assets = self._build_order_cancelled_html(
+            order, client, refund_info
+        )
+        return plain_text, html_body, inline_assets
+
+    def _build_order_cancelled_html(
+        self, order: Order, client: Client, refund_info: List[Dict] = None
+    ) -> Tuple[str, List["EmailService.InlineAsset"]]:
+        # Itens
+        rows = []
+        total_items_qty = 0
+        for item in order.items:
+            total_items_qty += item.quantity
+            rows.append(
+                f"<tr>"
+                f"<td>{escape(item.product_name)} (ID: {escape(str(item.product_id))})</td>"
+                f"<td>{item.quantity}x</td>"
+                f"<td>R$ {item.total_price:.2f}</td>"
+                f"</tr>"
+            )
+        items_html = (
+            '<table class="items-table">'
+            "<thead><tr><th>Produto</th><th>Qtd.</th><th>Total</th></tr></thead>"
+            "<tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+        # Cliente
+        customer_rows = [
+            ("Nome", client.name or "Não informado"),
+            ("CPF", client.cpf or "Não informado"),
+            ("Email", (client.email or getattr(client.user, "email", None) or "Não informado")),
+            ("Telefone", client.phone or "Não informado"),
+            ("Celular", client.mobile_phone or "Não informado"),
+        ]
+
+        if client.address:
+            complement = (
+                f", {client.address.complement}" if client.address.complement else ""
+            )
+            address_lines = [
+                f"{client.address.address or 'Endereço não informado'}, "
+                f"{client.address.number or 's/n'}{complement}",
+                f"{client.address.province or 'Bairro não informado'}",
+                f"{client.address.city or 'Cidade?'} - {client.address.state or 'UF?'}",
+                f"CEP: {client.address.postal_code or 'Não informado'}",
+            ]
+            customer_rows.append(("Endereço", " | ".join(address_lines)))
+
+        customer_info_html = "<ul class=\"info-list\">" + "".join(
+            f"<li><span class=\"label\">{escape(label)}</span>"
+            f"<span class=\"value\">{escape(str(value))}</span></li>"
+            for label, value in customer_rows
+        ) + "</ul>"
+
+        # Datas
+        brazil_tz = pytz.timezone("America/Sao_Paulo")
+        cancelled_at = (
+            order.updated_at.astimezone(brazil_tz)
+            if order.updated_at
+            else datetime.now(timezone.utc).astimezone(brazil_tz)
+        )
+        cancelled_at_str = cancelled_at.strftime("%d/%m/%Y às %H:%M")
+        if order.created_at:
+            created_at_brazil = order.created_at.astimezone(brazil_tz)
+            created_at_str = created_at_brazil.strftime("%d/%m/%Y às %H:%M")
+        else:
+            created_at_str = "Não disponível"
+
+        # Frete
+        shipping_details = self._build_shipping_details(order)
+        shipping_html = "<br>".join(
+            [escape(line) for line in shipping_details.splitlines() if line.strip()]
+        )
+
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        context = {
+            "brand_element": brand_element,
+            "order_reference": escape(order.external_reference or "—"),
+            "cancelled_at": cancelled_at_str,
+            "created_at": created_at_str,
+            "total": f"{order.total:.2f}",
+            "total_items": str(total_items_qty),
+            "customer_info_html": customer_info_html,
+            "items_html": items_html,
+            "shipping_html": shipping_html,
+        }
+
+        try:
+            html_body = self._render_email_template(
+                "order_cancelled_owner.html", context
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(self._build_order_cancelled_message(order, client, refund_info))}</pre>"
+            inline_assets = []
+
+        return html_body, inline_assets
     
     def send_order_cancelled_email_to_customer(self, order: Order, client: Client) -> bool:
         """
@@ -491,16 +856,16 @@ Por favor, tome as providências necessárias.
             
             subject = f"Pedido Cancelado - {order.external_reference}"
             
-            # Monta o corpo do email
-            message = self._build_order_cancelled_customer_message(order, client)
-            
-            # Envia o email
-            send_mail(
+            text_body, html_body, inline_assets = self._build_order_cancelled_customer_payload(
+                order, client
+            )
+
+            self._send_email_with_html(
                 subject=subject,
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[client_email],
-                fail_silently=False,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[client_email],
+                inline_assets=inline_assets,
             )
             
             return True
@@ -595,6 +960,78 @@ Equipe de Atendimento
         
         return message
     
+    def _build_order_cancelled_customer_payload(
+        self, order: Order, client: Client
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
+        plain_text = self._build_order_cancelled_customer_message(order, client)
+
+        # Datas
+        brazil_tz = pytz.timezone("America/Sao_Paulo")
+        cancelled_at = (
+            order.updated_at.astimezone(brazil_tz)
+            if order.updated_at
+            else datetime.now(timezone.utc).astimezone(brazil_tz)
+        )
+        cancelled_at_str = cancelled_at.strftime("%d/%m/%Y às %H:%M")
+        if order.created_at:
+            created_at_brazil = order.created_at.astimezone(brazil_tz)
+            created_at_str = created_at_brazil.strftime("%d/%m/%Y às %H:%M")
+        else:
+            created_at_str = "Não disponível"
+
+        # Itens
+        rows = []
+        total_items_qty = 0
+        for item in order.items:
+            total_items_qty += item.quantity
+            rows.append(
+                f"<tr>"
+                f"<td>{escape(item.product_name)}</td>"
+                f"<td>{item.quantity}x</td>"
+                f"<td>R$ {item.total_price:.2f}</td>"
+                f"</tr>"
+            )
+        items_html = (
+            '<table class="items-table">'
+            "<thead><tr><th>Produto</th><th>Qtd.</th><th>Total</th></tr></thead>"
+            "<tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+        shipping_details = self._build_shipping_details(order)
+        shipping_html = "<br>".join(
+            [escape(line) for line in shipping_details.splitlines() if line.strip()]
+        )
+
+        notes_html = escape(order.notes or "Nenhuma observação adicional.")
+
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        context = {
+            "brand_element": brand_element,
+            "customer_name": escape(client.name or "Cliente"),
+            "order_reference": escape(order.external_reference or "—"),
+            "created_at": created_at_str,
+            "cancelled_at": cancelled_at_str,
+            "total": f"{order.total:.2f}",
+            "items_html": items_html,
+            "shipping_html": shipping_html,
+            "notes_html": notes_html,
+            "total_items": str(total_items_qty),
+        }
+
+        try:
+            html_body = self._render_email_template(
+                "order_cancelled_customer.html", context
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(plain_text)}</pre>"
+            inline_assets = []
+
+        return plain_text, html_body, inline_assets
+    
     def send_refund_notification_email_to_customer(self, order: Order, client: Client, payment_info: Dict = None) -> bool:
         """
         Envia email ao cliente quando o estorno for processado
@@ -616,16 +1053,16 @@ Equipe de Atendimento
             
             subject = f"Estorno Processado - Pedido {order.external_reference}"
             
-            # Monta o corpo do email
-            message = self._build_refund_customer_message(order, client, payment_info)
-            
-            # Envia o email
-            send_mail(
+            text_body, html_body, inline_assets = self._build_refund_customer_payload(
+                order, client, payment_info
+            )
+
+            self._send_email_with_html(
                 subject=subject,
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[client_email],
-                fail_silently=False,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[client_email],
+                inline_assets=inline_assets,
             )
             
             return True
@@ -729,6 +1166,97 @@ Equipe de Atendimento
         
         return message
     
+    def _build_refund_customer_payload(
+        self, order: Order, client: Client, payment_info: Dict = None
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
+        plain_text = self._build_refund_customer_message(order, client, payment_info)
+
+        brazil_tz = pytz.timezone("America/Sao_Paulo")
+        refund_at = (
+            order.updated_at.astimezone(brazil_tz)
+            if order.updated_at
+            else datetime.now(timezone.utc).astimezone(brazil_tz)
+        )
+        refund_at_str = refund_at.strftime("%d/%m/%Y às %H:%M")
+        if order.created_at:
+            created_at_brazil = order.created_at.astimezone(brazil_tz)
+            created_at_str = created_at_brazil.strftime("%d/%m/%Y às %H:%M")
+        else:
+            created_at_str = "Não disponível"
+
+        rows = []
+        total_items_qty = 0
+        for item in order.items:
+            total_items_qty += item.quantity
+            rows.append(
+                f"<tr>"
+                f"<td>{escape(item.product_name)}</td>"
+                f"<td>{item.quantity}x</td>"
+                f"<td>R$ {item.total_price:.2f}</td>"
+                f"</tr>"
+            )
+        items_html = (
+            '<table class="items-table">'
+            "<thead><tr><th>Produto</th><th>Qtd.</th><th>Total</th></tr></thead>"
+            "<tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
+
+        shipping_details = self._build_shipping_details(order)
+        shipping_html = "<br>".join(
+            [escape(line) for line in shipping_details.splitlines() if line.strip()]
+        )
+
+        refund_details = []
+        if payment_info:
+            payment_method = payment_info.get("payment_method")
+            if payment_method:
+                refund_details.append(("Método de pagamento", payment_method))
+            status = payment_info.get("status") or "Processado com sucesso"
+            refund_details.append(("Status do estorno", status))
+            txn = payment_info.get("transaction_id")
+            if txn:
+                refund_details.append(("ID da transação", txn))
+
+        if refund_details:
+            refund_info_html = "<ul class=\"info-list\">" + "".join(
+                f"<li><span class=\"label\">{escape(label)}</span>"
+                f"<span class=\"value\">{escape(str(value))}</span></li>"
+                for label, value in refund_details
+            ) + "</ul>"
+        else:
+            refund_info_html = "<p style=\"margin:0; font-size:13px; color:#4c4b45;\">Informações adicionais não disponíveis.</p>"
+
+        notes_html = escape(order.notes or "Nenhuma observação adicional.")
+
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        context = {
+            "brand_element": brand_element,
+            "customer_name": escape(client.name or "Cliente"),
+            "order_reference": escape(order.external_reference or "—"),
+            "created_at": created_at_str,
+            "refund_at": refund_at_str,
+            "total": f"{order.total:.2f}",
+            "items_html": items_html,
+            "shipping_html": shipping_html,
+            "refund_info_html": refund_info_html,
+            "notes_html": notes_html,
+            "total_items": str(total_items_qty),
+        }
+
+        try:
+            html_body = self._render_email_template(
+                "refund_customer.html", context
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(plain_text)}</pre>"
+            inline_assets = []
+
+        return plain_text, html_body, inline_assets
+    
     def send_password_reset_email(self, user_email: str, user_name: str, reset_token: str, reset_url: str = None) -> bool:
         """
         Envia email com link para reset de senha
@@ -751,16 +1279,18 @@ Equipe de Atendimento
             
             subject = "Redefinição de Senha"
             
-            # Monta o corpo do email
-            message = self._build_password_reset_message(user_name, reset_url, reset_token)
-            
-            # Envia o email
-            send_mail(
+            text_body, html_body, inline_assets = self._build_password_reset_payload(
+                user_name=user_name,
+                reset_url=reset_url,
+                reset_token=reset_token,
+            )
+
+            self._send_email_with_html(
                 subject=subject,
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user_email],
-                fail_silently=False,
+                text_body=text_body,
+                html_body=html_body,
+                recipients=[user_email],
+                inline_assets=inline_assets,
             )
             
             return True
@@ -819,3 +1349,28 @@ Atenciosamente,
 Equipe de Suporte
 """
         return message
+
+    def _build_password_reset_payload(
+        self, user_name: str, reset_url: str, reset_token: str
+    ) -> Tuple[str, str, List["EmailService.InlineAsset"]]:
+        plain_text = self._build_password_reset_message(user_name, reset_url, reset_token)
+
+        brand_element, brand_assets = self._build_branding()
+        inline_assets: List[EmailService.InlineAsset] = list(brand_assets)
+
+        context = {
+            "brand_element": brand_element,
+            "user_name": escape(user_name or "Cliente"),
+            "reset_url": reset_url,
+            "reset_token": reset_token,
+        }
+
+        try:
+            html_body = self._render_email_template(
+                "password_reset.html", context
+            )
+        except FileNotFoundError:
+            html_body = f"<pre>{escape(plain_text)}</pre>"
+            inline_assets = []
+
+        return plain_text, html_body, inline_assets

@@ -58,7 +58,7 @@ class ProdutoRepository:
                 Produto(
                     id='n5-energia',
                     nome='Vela N.5 ENERGIA',
-                    preco=Decimal('169.90'),
+                    preco=Decimal('5.00'),
                     largura=Decimal('25.00'),
                     comprimento=Decimal('25.00'),
                     altura=Decimal('25.00'),

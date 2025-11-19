@@ -330,8 +330,8 @@ class WebhookNotificationService:
             except Exception as e:
                 print(f"[DEBUG] Erro ao criar payment para parcela: {str(e)}")
         
-        # IMPORTANTE: Se encontrou um payment pelo checkout_session mas o asaas_id é diferente, é uma nova parcela
-        # Precisamos verificar se já existe um payment com o asaas_id da notificação
+        # IMPORTANTE: Se encontrou um payment pelo checkout_session mas o asaas_id é diferente
+        # Verifica se já existe um payment com o asaas_id da notificação
         if payment and notification.payment_id:
             payment_with_asaas_id = self._get_payment_by_asaas_id(notification.payment_id)
             if payment_with_asaas_id and payment_with_asaas_id.id != payment.id:
@@ -339,49 +339,88 @@ class WebhookNotificationService:
                 payment = payment_with_asaas_id
             elif not payment_with_asaas_id and payment.asaas_id != notification.payment_id:
                 # Não existe payment com este asaas_id
-                # Criar um novo payment para esta parcela
-                # IMPORTANTE: description DEVE vir da notificação, não do payment antigo
-                if not notification.description:
-                    result['error'] = 'Notificação sem descrição'
-                    return result
-                
-                # Converte o billingType do Asaas para nosso formato
-                billing_type_mapping = {
-                    'CREDIT_CARD': 'CREDIT_CARD',
-                    'PIX': 'PIX',
-                    'BOLETO': 'BOLETO',
-                    'DEBIT_CARD': 'DEBIT_CARD'
-                }
-                payment_method = billing_type_mapping.get(notification.billing_type, notification.billing_type if notification.billing_type else payment.payment_method)
-                
-                new_payment = Payment(
-                    id=str(uuid4()),
-                    client=payment.client,
-                    value=notification.value or payment.value,
-                    payment_method=payment_method,  # Usa o billingType da notificação
-                    order_id=payment.order_id,
-                    asaas_id=notification.payment_id,
-                    asaas_checkout_id=payment.asaas_checkout_id,
-                    status='PENDING',
-                    description=notification.description,  # SEMPRE usa da notificação
-                    checkout_url=payment.checkout_url,
-                    payment_url=None,
-                    external_reference=payment.external_reference,
-                    installments=payment.installments,
-                    installment_id=notification.installment_id or payment.installment_id,
-                    installment_number=None,  # Será extraído da descrição
-                    expires_at=payment.expires_at,
-                    created_at=datetime.now(timezone.utc)
-                )
-                # Extrai installment_number e total de parcelas da descrição
-                match = re.search(r'Parcela\s+(\d+)\s+de\s+(\d+)', notification.description)
-                if match:
-                    new_payment.installment_number = int(match.group(1))
-                    # Atualiza o número total de parcelas
-                    total_installments = int(match.group(2))
-                    new_payment.installments = total_installments
-                
-                payment = self.payment_repository.save(new_payment)
+                # Só cria um novo payment se for parcelamento (tem installment_id)
+                # Para pagamentos simples (PIX), apenas atualiza o asaas_id do payment existente
+                if notification.installment_id:
+                    # É parcelamento: cria novo payment para esta parcela
+                    # Descrição é necessária para identificar a parcela
+                    if not notification.description:
+                        # Se não tem descrição mas é parcelamento, tenta usar a descrição do payment anterior
+                        # ou gera uma descrição padrão
+                        description = payment.description or f'Parcela do parcelamento {notification.installment_id}'
+                        # Mas se o payment anterior não tem descrição de parcela válida, precisa da notificação
+                        if not payment.description or not re.search(r'Parcela\s+\d+\s+de\s+\d+', payment.description):
+                            # Sem descrição válida, não pode criar parcela com segurança
+                            # Neste caso, apenas atualiza o payment existente com o novo asaas_id
+                            payment.asaas_id = notification.payment_id
+                        else:
+                            # Tem descrição válida do payment anterior, pode criar novo payment
+                            new_payment = Payment(
+                                id=str(uuid4()),
+                                client=payment.client,
+                                value=notification.value or payment.value,
+                                payment_method=payment.payment_method,
+                                order_id=payment.order_id,
+                                asaas_id=notification.payment_id,
+                                asaas_checkout_id=payment.asaas_checkout_id,
+                                status='PENDING',
+                                description=description,
+                                checkout_url=payment.checkout_url,
+                                payment_url=None,
+                                external_reference=payment.external_reference,
+                                installments=payment.installments,
+                                installment_id=notification.installment_id,
+                                installment_number=None,
+                                expires_at=payment.expires_at,
+                                created_at=datetime.now(timezone.utc)
+                            )
+                            # Tenta extrair installment_number da descrição se possível
+                            match = re.search(r'Parcela\s+(\d+)\s+de\s+(\d+)', description)
+                            if match:
+                                new_payment.installment_number = int(match.group(1))
+                                new_payment.installments = int(match.group(2))
+                            
+                            payment = self.payment_repository.save(new_payment)
+                    else:
+                        # Tem descrição: cria novo payment para esta parcela
+                        billing_type_mapping = {
+                            'CREDIT_CARD': 'CREDIT_CARD',
+                            'PIX': 'PIX',
+                            'BOLETO': 'BOLETO',
+                            'DEBIT_CARD': 'DEBIT_CARD'
+                        }
+                        payment_method = billing_type_mapping.get(notification.billing_type, notification.billing_type if notification.billing_type else payment.payment_method)
+                        
+                        new_payment = Payment(
+                            id=str(uuid4()),
+                            client=payment.client,
+                            value=notification.value or payment.value,
+                            payment_method=payment_method,
+                            order_id=payment.order_id,
+                            asaas_id=notification.payment_id,
+                            asaas_checkout_id=payment.asaas_checkout_id,
+                            status='PENDING',
+                            description=notification.description,
+                            checkout_url=payment.checkout_url,
+                            payment_url=None,
+                            external_reference=payment.external_reference,
+                            installments=payment.installments,
+                            installment_id=notification.installment_id,
+                            installment_number=None,
+                            expires_at=payment.expires_at,
+                            created_at=datetime.now(timezone.utc)
+                        )
+                        # Extrai installment_number e total de parcelas da descrição
+                        match = re.search(r'Parcela\s+(\d+)\s+de\s+(\d+)', notification.description)
+                        if match:
+                            new_payment.installment_number = int(match.group(1))
+                            new_payment.installments = int(match.group(2))
+                        
+                        payment = self.payment_repository.save(new_payment)
+                else:
+                    # Não é parcelamento: apenas atualiza o asaas_id do payment existente
+                    # Isso acontece quando o payment foi criado sem asaas_id e agora recebe o webhook
+                    payment.asaas_id = notification.payment_id
         
         if payment:
             
@@ -484,23 +523,30 @@ class WebhookNotificationService:
                                     order.mark_as_paid()
                                     self.order_repository.update(order)
                                     order_status_updated = True
-                                    
-                                    # Envia email imediatamente
-                                    self._send_order_confirmed_email(order)
+                                
+                                # Envia email sempre que o pagamento for concluído (payment_received)
+                                # mesmo se o pedido já estava PAID (para garantir que o email seja enviado)
+                                self._send_order_confirmed_email(order)
                         else:
                             # Se não conseguiu determinar total de parcelas, pelo menos confirma
                             if order.is_pending():
                                 order.confirm()
                                 self.order_repository.update(order)
+                            
+                            # Envia email mesmo quando não consegue determinar total de parcelas
+                            # mas o pagamento foi recebido
+                            if order.status in ['PAID', 'CONFIRMED']:
+                                self._send_order_confirmed_email(order)
                     else:
                         # Pagamento à vista (PIX): muda para PAID quando recebido
                         if order.status != 'PAID':
                             order.mark_as_paid()
                             self.order_repository.update(order)
                             order_status_updated = True
-                            
-                            # Envia email imediatamente
-                            self._send_order_confirmed_email(order)
+                        
+                        # Envia email sempre que o pagamento for recebido (payment_received)
+                        # mesmo se o pedido já estava PAID (para garantir que o email seja enviado)
+                        self._send_order_confirmed_email(order)
             
             # Recarrega o pedido para pegar o status atualizado
             final_order_status = None

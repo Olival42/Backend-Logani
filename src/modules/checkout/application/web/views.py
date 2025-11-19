@@ -265,11 +265,11 @@ class CheckoutCreateView(APIView):
                     )
                 
                 # Verifica se o pedido possui frete associado
-                from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
-                if not OrderShippingModel.objects.filter(order_id=order.id).exists():
-                    return ErrorResponse.bad_request(
-                        "Não é possível criar checkout: o pedido informado não possui frete associado."
-                    )
+                # from modules.pedido.adapters.persistence.models import OrderShipping as OrderShippingModel
+                # if not OrderShippingModel.objects.filter(order_id=order.id).exists():
+                #     return ErrorResponse.bad_request(
+                #         "Não é possível criar checkout: o pedido informado não possui frete associado."
+                #     )
                 
                 # Verifica se já existe checkout ativo para este pedido
                 active_statuses = ['PENDING', 'RECEIVED']

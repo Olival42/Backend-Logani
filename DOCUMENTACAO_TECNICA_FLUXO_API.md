@@ -902,11 +902,58 @@ def cancel_order(self, order_id):
     return {'order_id': order.id, 'status': 'CANCELLED'}
 ```
 
+### Tasks Assíncronas de Pagamento e Limpeza
+
+#### 1. Limpeza de Checkouts Órfãos
+```python
+@shared_task(name='cleanup_orphaned_checkouts', bind=True, max_retries=3, default_retry_delay=300)
+def cleanup_orphaned_checkouts_async(self, asaas_checkout_ids: List[str]) -> dict:
+    """
+    Task assíncrona para limpar checkouts órfãos no Asaas
+    
+    Usada quando uma operação falha após criar checkout no Asaas mas antes de salvar localmente.
+    Sistema agenda esta task para limpar recursos órfãos no Asaas.
+    """
+    cleanup_service = CleanupService()
+    result = cleanup_service.cleanup_orphaned_checkouts(asaas_checkout_ids)
+    return result
+```
+
+**Uso:**
+- Chamada automaticamente quando operação com Asaas falha após criar checkout
+- Limpa checkouts criados no Asaas mas não salvos no banco local
+- Previne acúmulo de recursos órfãos no gateway
+
+#### 2. Reconciliação de Status de Checkout
+```python
+@shared_task(name='reconcile_checkout_status', bind=True, max_retries=3, default_retry_delay=300)
+def reconcile_checkout_status_async(self, asaas_checkout_id: str) -> dict:
+    """
+    Task assíncrona para reconciliar status de um checkout
+    
+    Sincroniza o status de um checkout local com o status no Asaas.
+    Útil para verificar inconsistências ou atualizar status manualmente.
+    """
+    cleanup_service = CleanupService()
+    result = cleanup_service.reconcile_checkout_status(asaas_checkout_id)
+    return result
+```
+
+**Uso:**
+- Sincroniza status de checkout entre sistema local e Asaas
+- Verifica inconsistências de status
+- Atualiza status local baseado no status real no Asaas
+
 ### Configuração de Retry
 
-Todas as tasks de email possuem:
+**Tasks de Email:**
 - **max_retries**: 3 tentativas
 - **default_retry_delay**: 60 segundos entre tentativas
+- **bind=True**: Permite acesso à task para retry manual
+
+**Tasks de Pagamento/Limpeza:**
+- **max_retries**: 3 tentativas
+- **default_retry_delay**: 300 segundos (5 minutos) entre tentativas
 - **bind=True**: Permite acesso à task para retry manual
 
 ### Benefícios
@@ -915,169 +962,1581 @@ Todas as tasks de email possuem:
 - **Escalabilidade**: Tasks podem ser distribuídas entre múltiplos workers
 - **Resiliência**: Falhas no email não afetam o processo principal
 - **Retry Automático**: Sistema tenta reenviar emails que falharam
+- **Limpeza Automática**: Sistema limpa recursos órfãos automaticamente
 - **Monitoramento**: Celery Flower permite monitorar execução das tasks
 
 ---
 
 ## Modelagem de Dados
 
-### Modelo de Pedido (Order)
+Esta seção descreve todas as tabelas do banco de dados, seus campos, relacionamentos e índices.
+
+### Tabela: `users` - Usuários do Sistema
+
+Armazena informações dos usuários que utilizam a API.
+
+```sql
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,  -- Hash da senha
+    registration_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_active ON users(active);
+```
+
+**Campos:**
+- `id`: Identificador único (auto-incremento)
+- `name`: Nome completo do usuário
+- `email`: Email único (usado para login)
+- `password`: Hash da senha (bcrypt)
+- `registration_date`: Data de cadastro
+- `active`: Indica se o usuário está ativo
+
+**Relacionamentos:**
+- OneToOne com `clients` (um usuário tem um cliente)
+
+---
+
+### Tabela: `password_reset_tokens` - Tokens de Reset de Senha
+
+Armazena tokens para recuperação de senha.
+
+```sql
+CREATE TABLE password_reset_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    used BOOLEAN NOT NULL DEFAULT FALSE,
+    used_at TIMESTAMP NULL
+);
+
+CREATE INDEX idx_password_reset_token_hash ON password_reset_tokens(token_hash);
+CREATE INDEX idx_password_reset_user_used_expires ON password_reset_tokens(user_id, used, expires_at);
+```
+
+**Campos:**
+- `id`: Identificador único
+- `user_id`: Referência ao usuário
+- `token_hash`: Hash do token (único)
+- `created_at`: Data de criação
+- `expires_at`: Data de expiração (geralmente 1 hora)
+- `used`: Indica se o token foi usado
+- `used_at`: Data de uso (se aplicável)
+
+---
+
+### Tabela: `addresses` - Endereços
+
+Armazena endereços de clientes.
+
+```sql
+CREATE TABLE addresses (
+    id BIGSERIAL PRIMARY KEY,
+    address VARCHAR(255) NOT NULL,
+    address_number VARCHAR(10) NOT NULL,
+    complement VARCHAR(255),
+    province VARCHAR(255) NOT NULL,
+    city VARCHAR(255) NOT NULL,
+    state VARCHAR(2) NOT NULL,  -- Sigla do estado (SP, RJ, etc)
+    postal_code VARCHAR(8) NOT NULL  -- CEP sem hífen
+);
+
+CREATE INDEX idx_addresses_postal_code ON addresses(postal_code);
+CREATE INDEX idx_addresses_city_state ON addresses(city, state);
+```
+
+**Campos:**
+- `id`: Identificador único
+- `address`: Nome da rua/avenida
+- `address_number`: Número do endereço
+- `complement`: Complemento (apto, bloco, etc)
+- `province`: Bairro
+- `city`: Cidade
+- `state`: Estado (sigla de 2 caracteres)
+- `postal_code`: CEP (8 dígitos, sem hífen)
+
+**Relacionamentos:**
+- OneToOne com `clients` (um endereço pertence a um cliente)
+
+---
+
+### Tabela: `clients` - Clientes
+
+Armazena informações dos clientes (perfis de compra).
+
+```sql
+CREATE TABLE clients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    cpf VARCHAR(14) NOT NULL UNIQUE,  -- CPF formatado (123.456.789-00)
+    phone VARCHAR(11),
+    mobile_phone VARCHAR(11),
+    address_id BIGINT REFERENCES addresses(id) ON DELETE SET NULL,
+    registration_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    asaas_id VARCHAR(50)  -- ID do cliente no Asaas
+);
+
+CREATE INDEX idx_clients_user_id ON clients(user_id);
+CREATE INDEX idx_clients_cpf ON clients(cpf);
+CREATE INDEX idx_clients_asaas_id ON clients(asaas_id);
+CREATE INDEX idx_clients_active ON clients(active);
+```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `name`: Nome completo do cliente
+- `user_id`: Referência ao usuário (OneToOne)
+- `cpf`: CPF único e formatado
+- `phone`: Telefone fixo (opcional)
+- `mobile_phone`: Telefone celular (opcional)
+- `address_id`: Referência ao endereço (OneToOne, opcional)
+- `registration_date`: Data de cadastro
+- `active`: Indica se o cliente está ativo
+- `asaas_id`: ID do cliente no gateway Asaas (para sincronização)
+
+**Relacionamentos:**
+- OneToOne com `users`
+- OneToOne com `addresses`
+- OneToMany com `orders`
+- OneToMany com `checkouts`
+- OneToMany com `payments`
+
+---
+
+### Tabela: `order_items` - Itens de Pedido
+
+Armazena itens (produtos) de um pedido.
+
+```sql
+CREATE TABLE order_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id VARCHAR(100) NOT NULL,  -- ID do produto no sistema externo
+    product_name VARCHAR(255) NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10,2) NOT NULL CHECK (unit_price >= 0),
+    total_price DECIMAL(10,2) NOT NULL CHECK (total_price >= 0),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_order_items_product_id ON order_items(product_id);
+```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `product_id`: ID do produto no sistema externo
+- `product_name`: Nome do produto
+- `quantity`: Quantidade (deve ser > 0)
+- `unit_price`: Preço unitário
+- `total_price`: Preço total (quantity * unit_price)
+- `created_at`: Data de criação
+
+**Relacionamentos:**
+- ManyToMany com `orders` (um item pode estar em múltiplos pedidos, um pedido tem múltiplos itens)
+
+---
+
+### Tabela: `orders` - Pedidos
+
+Armazena informações dos pedidos.
 
 ```sql
 CREATE TABLE orders (
-    id UUID PRIMARY KEY,
-    client_id UUID REFERENCES clients(id),
-    subtotal DECIMAL(10,2),
-    total DECIMAL(10,2),
-    status VARCHAR(50), -- PENDING, CONFIRMED, PAID, PREPARING, CANCELLED
-    external_reference VARCHAR(100) UNIQUE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    subtotal DECIMAL(10,2) NOT NULL CHECK (subtotal >= 0),
+    total DECIMAL(10,2) NOT NULL CHECK (total >= 0),
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' 
+        CHECK (status IN ('PENDING', 'CONFIRMED', 'PAID', 'PREPARING', 'CANCELLED')),
+    external_reference VARCHAR(100) UNIQUE,  -- Referência externa (ex: ORD_20240115103000_ABC123)
     notes TEXT,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    confirmed_at TIMESTAMP
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- Itens do pedido
-CREATE TABLE order_items (
-    id UUID PRIMARY KEY,
-    order_id UUID REFERENCES orders(id),
-    product_id VARCHAR(100),
-    product_name VARCHAR(255),
-    quantity INTEGER,
-    unit_price DECIMAL(10,2),
-    total_price DECIMAL(10,2)
-);
-
--- Frete do pedido (OneToOne - um pedido tem apenas um frete escolhido)
-CREATE TABLE order_shipping (
-    id UUID PRIMARY KEY,
-    order_id UUID UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
-    service_id INTEGER, -- ID do serviço no Melhor Envio
-    service_name VARCHAR(255),
-    price DECIMAL(10,2),
-    custom_price DECIMAL(10,2), -- Preço customizado (se aplicável)
-    delivery_time INTEGER, -- Prazo de entrega em dias
-    custom_delivery_time INTEGER, -- Prazo customizado (se aplicável)
-    currency VARCHAR(3) DEFAULT 'BRL',
-    company JSONB, -- Informações da transportadora (nome, id, picture, etc)
-    from_postal_code VARCHAR(8),
-    to_postal_code VARCHAR(8),
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
+CREATE INDEX idx_orders_client_id ON orders(client_id);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_external_reference ON orders(external_reference);
+CREATE INDEX idx_orders_created_at ON orders(created_at DESC);
+CREATE INDEX idx_orders_active ON orders(active);
 ```
 
-### Modelo de Pagamento (Payment)
+**Campos:**
+- `id`: Identificador único (UUID)
+- `client_id`: Referência ao cliente
+- `subtotal`: Subtotal do pedido (sem frete)
+- `total`: Total do pedido (subtotal + frete)
+- `status`: Status do pedido (PENDING, CONFIRMED, PAID, PREPARING, CANCELLED)
+- `external_reference`: Referência externa única (usada para integração com checkout)
+- `notes`: Observações do pedido
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+- `confirmed_at`: Data de confirmação (quando status muda para CONFIRMED)
+- `active`: Indica se o pedido está ativo (pedidos sem itens são marcados como inativos)
+
+**Relacionamentos:**
+- ManyToOne com `clients`
+- ManyToMany com `order_items`
+- OneToOne com `order_shipping`
+- OneToMany com `payments`
+
+**Status do Pedido:**
+- `PENDING`: Pedido criado, aguardando confirmação
+- `CONFIRMED`: Pedido confirmado, aguardando pagamento
+- `PAID`: Pedido pago, pronto para preparação
+- `PREPARING`: Pedido em preparação/envio
+- `CANCELLED`: Pedido cancelado
+
+---
+
+### Tabela: `order_shipping` - Frete do Pedido
+
+Armazena informações do serviço de frete escolhido para um pedido.
+
+```sql
+CREATE TABLE order_shipping (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+    service_id INTEGER NOT NULL,  -- ID do serviço no Melhor Envio
+    service_name VARCHAR(255) NOT NULL,  -- Nome do serviço (PAC, SEDEX, etc)
+    price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
+    custom_price DECIMAL(10,2) CHECK (custom_price >= 0),  -- Preço customizado
+    delivery_time INTEGER NOT NULL CHECK (delivery_time > 0),  -- Prazo em dias
+    custom_delivery_time INTEGER CHECK (custom_delivery_time > 0),  -- Prazo customizado
+    currency VARCHAR(3) NOT NULL DEFAULT 'BRL',
+    company JSONB,  -- Informações da transportadora (id, name, picture, etc)
+    from_postal_code VARCHAR(8) NOT NULL,  -- CEP de origem
+    to_postal_code VARCHAR(8) NOT NULL,  -- CEP de destino
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_order_shipping_order_id ON order_shipping(order_id);
+CREATE INDEX idx_order_shipping_service_id ON order_shipping(service_id);
+```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `order_id`: Referência ao pedido (OneToOne)
+- `service_id`: ID do serviço no Melhor Envio
+- `service_name`: Nome do serviço (ex: "PAC", "SEDEX")
+- `price`: Preço padrão do frete
+- `custom_price`: Preço customizado (se aplicável)
+- `delivery_time`: Prazo de entrega em dias
+- `custom_delivery_time`: Prazo customizado (se aplicável)
+- `currency`: Moeda (padrão: BRL)
+- `company`: JSON com informações da transportadora (id, name, picture)
+- `from_postal_code`: CEP de origem (8 dígitos)
+- `to_postal_code`: CEP de destino (8 dígitos)
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+
+**Relacionamentos:**
+- OneToOne com `orders`
+
+**Propriedades Calculadas:**
+- `final_price`: Retorna `custom_price` se disponível, senão `price`
+- `final_delivery_time`: Retorna `custom_delivery_time` se disponível, senão `delivery_time`
+
+---
+
+### Tabela: `checkouts` - Checkouts
+
+Armazena informações de checkouts criados no Asaas.
+
+```sql
+CREATE TABLE checkouts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asaas_id VARCHAR(50) UNIQUE,  -- ID do checkout no Asaas
+    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    value DECIMAL(10,2) NOT NULL CHECK (value >= 0),
+    description TEXT,
+    installments INTEGER NOT NULL DEFAULT 1 CHECK (installments > 0),
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'CONFIRMED', 'PAID', 'RECEIVED', 'CANCELLED', 'EXPIRED', 'REFUNDING', 'REFUNDED', 'FAILED')),
+    checkout_url TEXT,
+    success_url TEXT,
+    failure_url TEXT,
+    expires_url TEXT,
+    external_reference VARCHAR(100),  -- Referência externa (geralmente external_reference do pedido)
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP
+);
+
+CREATE INDEX idx_checkouts_client_id ON checkouts(client_id);
+CREATE INDEX idx_checkouts_asaas_id ON checkouts(asaas_id);
+CREATE INDEX idx_checkouts_status ON checkouts(status);
+CREATE INDEX idx_checkouts_external_reference ON checkouts(external_reference);
+CREATE INDEX idx_checkouts_created_at ON checkouts(created_at DESC);
+```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `asaas_id`: ID do checkout no Asaas (único)
+- `client_id`: Referência ao cliente
+- `name`: Nome do checkout
+- `value`: Valor total do checkout
+- `description`: Descrição do checkout
+- `installments`: Número de parcelas
+- `status`: Status do checkout
+- `checkout_url`: URL do checkout no Asaas
+- `success_url`: URL de redirecionamento em caso de sucesso
+- `failure_url`: URL de redirecionamento em caso de falha
+- `expires_url`: URL de redirecionamento em caso de expiração
+- `external_reference`: Referência externa (geralmente do pedido)
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+- `expires_at`: Data de expiração do checkout
+
+**Relacionamentos:**
+- ManyToOne com `clients`
+
+**Status do Checkout:**
+- `PENDING`: Checkout criado, aguardando pagamento
+- `CONFIRMED`: Checkout confirmado
+- `PAID`: Checkout pago
+- `RECEIVED`: Pagamento recebido
+- `CANCELLED`: Checkout cancelado
+- `EXPIRED`: Checkout expirado
+- `REFUNDING`: Estorno em andamento
+- `REFUNDED`: Estornado
+- `FAILED`: Falhou
+
+---
+
+### Tabela: `payments` - Pagamentos
+
+Armazena informações de pagamentos processados.
 
 ```sql
 CREATE TABLE payments (
-    id UUID PRIMARY KEY,
-    order_id UUID REFERENCES orders(id),
-    asaas_id VARCHAR(100), -- ID no Asaas
-    value DECIMAL(10,2),
-    payment_method VARCHAR(50), -- PIX, BOLETO, CREDIT_CARD
-    status VARCHAR(50), -- PENDING, PAID, RECEIVED, OVERDUE, REFUNDED
-    installments INTEGER,
-    installment_id VARCHAR(100), -- ID da parcela no Asaas
-    installment_number INTEGER,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+    asaas_id VARCHAR(50) UNIQUE,  -- ID do pagamento no Asaas
+    asaas_checkout_id VARCHAR(50),  -- ID do checkout no Asaas
+    value DECIMAL(10,2) NOT NULL CHECK (value >= 0),
+    description TEXT,
+    payment_method VARCHAR(50) NOT NULL
+        CHECK (payment_method IN ('PIX', 'CREDIT_CARD', 'BOLETO')),
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'PAID', 'RECEIVED', 'CANCELLED', 'EXPIRED', 'REFUNDING', 'REFUNDED', 'FAILED')),
     checkout_url TEXT,
+    payment_url TEXT,
+    external_reference VARCHAR(100),
+    installments INTEGER NOT NULL DEFAULT 1 CHECK (installments > 0),
+    installment_id VARCHAR(100),  -- ID da parcela no Asaas (para pagamentos parcelados)
+    installment_number INTEGER,  -- Número da parcela (1, 2, 3...)
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP,
     paid_at TIMESTAMP,
-    created_at TIMESTAMP
+    refunded_at TIMESTAMP
 );
+
+CREATE INDEX idx_payments_client_id ON payments(client_id);
+CREATE INDEX idx_payments_order_id ON payments(order_id);
+CREATE INDEX idx_payments_asaas_id ON payments(asaas_id);
+CREATE INDEX idx_payments_status ON payments(status);
+CREATE INDEX idx_payments_external_reference ON payments(external_reference);
+CREATE INDEX idx_payments_installment_id ON payments(installment_id);
+CREATE INDEX idx_payments_created_at ON payments(created_at DESC);
 ```
 
-### Modelo de Webhook (WebhookNotification)
+**Campos:**
+- `id`: Identificador único (UUID)
+- `client_id`: Referência ao cliente
+- `order_id`: Referência ao pedido (opcional, pode haver pagamentos sem pedido)
+- `asaas_id`: ID do pagamento no Asaas (único)
+- `asaas_checkout_id`: ID do checkout no Asaas
+- `value`: Valor do pagamento
+- `description`: Descrição do pagamento
+- `payment_method`: Método de pagamento (PIX, CREDIT_CARD, BOLETO)
+- `status`: Status do pagamento
+- `checkout_url`: URL do checkout
+- `payment_url`: URL de pagamento (para boleto, por exemplo)
+- `external_reference`: Referência externa (geralmente do pedido)
+- `installments`: Número de parcelas
+- `installment_id`: ID da parcela no Asaas (para pagamentos parcelados)
+- `installment_number`: Número da parcela (1, 2, 3...)
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+- `expires_at`: Data de expiração (para PIX e Boleto)
+- `paid_at`: Data do pagamento
+- `refunded_at`: Data do estorno
+
+**Relacionamentos:**
+- ManyToOne com `clients`
+- ManyToOne com `orders` (opcional)
+- OneToMany com `payment_items` (opcional)
+
+**Status do Pagamento:**
+- `PENDING`: Pagamento pendente
+- `PAID`: Pagamento pago
+- `RECEIVED`: Pagamento recebido (confirmado)
+- `CANCELLED`: Pagamento cancelado
+- `EXPIRED`: Pagamento expirado
+- `REFUNDING`: Estorno em andamento
+- `REFUNDED`: Estornado
+- `FAILED`: Falhou
+
+---
+
+### Tabela: `payment_items` - Itens de Pagamento
+
+Armazena itens detalhados de um pagamento (opcional, para detalhamento).
+
+```sql
+CREATE TABLE payment_items (
+    id BIGSERIAL PRIMARY KEY,
+    payment_id UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+    description VARCHAR(255) NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    unit_value DECIMAL(10,2) NOT NULL CHECK (unit_value >= 0),
+    total_value DECIMAL(10,2) NOT NULL CHECK (total_value >= 0)
+);
+
+CREATE INDEX idx_payment_items_payment_id ON payment_items(payment_id);
+```
+
+**Campos:**
+- `id`: Identificador único (auto-incremento)
+- `payment_id`: Referência ao pagamento
+- `description`: Descrição do item
+- `quantity`: Quantidade
+- `unit_value`: Valor unitário
+- `total_value`: Valor total (quantity * unit_value)
+
+**Relacionamentos:**
+- ManyToOne com `payments`
+
+---
+
+### Tabela: `webhooks` - Configurações de Webhooks
+
+Armazena configurações de webhooks cadastrados no Asaas.
+
+```sql
+CREATE TABLE webhooks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asaas_webhook_id VARCHAR(50) UNIQUE,  -- ID do webhook no Asaas
+    url TEXT NOT NULL UNIQUE,
+    email VARCHAR(255),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('ACTIVE', 'INACTIVE', 'ERROR')),
+    api_version VARCHAR(10) NOT NULL DEFAULT 'v3',
+    auth_token VARCHAR(255),
+    events JSONB NOT NULL DEFAULT '[]',  -- Lista de eventos configurados
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_webhooks_asaas_webhook_id ON webhooks(asaas_webhook_id);
+CREATE INDEX idx_webhooks_url ON webhooks(url);
+CREATE INDEX idx_webhooks_status ON webhooks(status);
+CREATE INDEX idx_webhooks_enabled ON webhooks(enabled);
+CREATE INDEX idx_webhooks_created_at ON webhooks(created_at DESC);
+```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `asaas_webhook_id`: ID do webhook no Asaas (único)
+- `url`: URL do webhook (única)
+- `email`: Email para notificações
+- `enabled`: Indica se o webhook está habilitado
+- `status`: Status do webhook (ACTIVE, INACTIVE, ERROR)
+- `api_version`: Versão da API (padrão: v3)
+- `auth_token`: Token de autenticação do webhook
+- `events`: JSON array com eventos configurados (ex: ["PAYMENT_RECEIVED", "PAYMENT_REFUNDED"])
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+
+**Eventos Comuns:**
+- `PAYMENT_CREATED`: Pagamento criado
+- `PAYMENT_CONFIRMED`: Pagamento confirmado
+- `PAYMENT_RECEIVED`: Pagamento recebido
+- `PAYMENT_OVERDUE`: Pagamento vencido
+- `PAYMENT_DELETED`: Pagamento deletado
+- `PAYMENT_REFUNDED`: Pagamento estornado
+
+---
+
+### Tabela: `webhook_notifications` - Notificações de Webhook
+
+Armazena notificações recebidas do Asaas via webhook.
 
 ```sql
 CREATE TABLE webhook_notifications (
-    id UUID PRIMARY KEY,
-    event VARCHAR(100), -- PAYMENT_RECEIVED, PAYMENT_REFUNDED, etc
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event VARCHAR(50) NOT NULL,
     payment_id VARCHAR(100),
+    subscription_id VARCHAR(100),
+    installment_id VARCHAR(100),
     customer_id VARCHAR(100),
-    status VARCHAR(50),
+    payment_date TIMESTAMP,
+    due_date TIMESTAMP,
     value DECIMAL(10,2),
+    net_value DECIMAL(10,2),
+    original_value DECIMAL(10,2),
+    interest_value DECIMAL(10,2),
+    description TEXT,
     external_reference VARCHAR(100),
-    processed BOOLEAN DEFAULT FALSE,
-    data JSONB, -- Dados brutos do webhook
-    created_at TIMESTAMP
+    billing_type VARCHAR(50),
+    status VARCHAR(50),
+    data JSONB NOT NULL DEFAULT '{}',  -- Dados completos da notificação
+    processed BOOLEAN NOT NULL DEFAULT FALSE,
+    processed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_webhook_notifications_event ON webhook_notifications(event);
+CREATE INDEX idx_webhook_notifications_payment_id ON webhook_notifications(payment_id);
+CREATE INDEX idx_webhook_notifications_external_reference ON webhook_notifications(external_reference);
+CREATE INDEX idx_webhook_notifications_processed ON webhook_notifications(processed);
+CREATE INDEX idx_webhook_notifications_created_at ON webhook_notifications(created_at DESC);
 ```
+
+**Campos:**
+- `id`: Identificador único (UUID)
+- `event`: Tipo de evento (PAYMENT_RECEIVED, PAYMENT_REFUNDED, etc)
+- `payment_id`: ID do pagamento no Asaas
+- `subscription_id`: ID da assinatura (se aplicável)
+- `installment_id`: ID da parcela (se aplicável)
+- `customer_id`: ID do cliente no Asaas
+- `payment_date`: Data do pagamento
+- `due_date`: Data de vencimento
+- `value`: Valor do pagamento
+- `net_value`: Valor líquido (após taxas)
+- `original_value`: Valor original
+- `interest_value`: Valor de juros (se aplicável)
+- `description`: Descrição
+- `external_reference`: Referência externa (geralmente do pedido)
+- `billing_type`: Tipo de cobrança (PIX, CREDIT_CARD, BOLETO)
+- `status`: Status do pagamento
+- `data`: JSON com dados completos da notificação
+- `processed`: Indica se a notificação foi processada
+- `processed_at`: Data de processamento
+- `created_at`: Data de recebimento da notificação
+
+**Uso:**
+- Todas as notificações recebidas são armazenadas para auditoria
+- Campo `processed` indica se a notificação já foi processada pelo sistema
+- Campo `data` armazena o JSON completo da notificação para referência
+
+---
+
+### Tabela: `melhor_envio_token` - Tokens OAuth do Melhor Envio
+
+Armazena tokens de autenticação OAuth do Melhor Envio.
+
+```sql
+CREATE TABLE melhor_envio_token (
+    id SERIAL PRIMARY KEY,
+    access_token TEXT NOT NULL UNIQUE,
+    refresh_token TEXT UNIQUE,  -- Null para tokens manuais
+    expires_in INTEGER NOT NULL DEFAULT 2592000,  -- 30 dias em segundos
+    token_type VARCHAR(50) NOT NULL DEFAULT 'Bearer',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_melhor_envio_token_created_at ON melhor_envio_token(created_at DESC);
+```
+
+**Campos:**
+- `id`: Identificador único (auto-incremento)
+- `access_token`: Token de acesso (único)
+- `refresh_token`: Token de renovação (único, null para tokens manuais)
+- `expires_in`: Tempo de expiração em segundos (padrão: 2592000 = 30 dias)
+- `token_type`: Tipo do token (padrão: Bearer)
+- `created_at`: Data de criação
+- `updated_at`: Data da última atualização
+
+**Uso:**
+- Tokens OAuth gerados via fluxo OAuth são armazenados aqui
+- Sistema prioriza tokens do banco sobre tokens do `.env`
+- Tokens com `refresh_token` são renovados automaticamente quando expirados
+
+**Métodos:**
+- `is_expired()`: Verifica se o token está expirado
+
+---
+
+### Tabela de Relacionamento: `orders_order_items` - Pedidos e Itens
+
+Tabela intermediária para relacionamento ManyToMany entre `orders` e `order_items`.
+
+```sql
+CREATE TABLE orders_order_items (
+    id BIGSERIAL PRIMARY KEY,
+    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    orderitem_id UUID NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+    UNIQUE(order_id, orderitem_id)
+);
+
+CREATE INDEX idx_orders_order_items_order_id ON orders_order_items(order_id);
+CREATE INDEX idx_orders_order_items_orderitem_id ON orders_order_items(orderitem_id);
+```
+
+**Campos:**
+- `id`: Identificador único
+- `order_id`: Referência ao pedido
+- `orderitem_id`: Referência ao item
+
+**Relacionamentos:**
+- ManyToMany entre `orders` e `order_items`
+
+---
+
+### Resumo dos Relacionamentos
+
+```
+users (1) ──< (1) clients (1) ──< (N) orders
+                                    │
+                                    ├──< (N) order_items (ManyToMany)
+                                    │
+                                    ├──< (1) order_shipping
+                                    │
+                                    └──< (N) payments
+
+clients (1) ──< (N) checkouts
+clients (1) ──< (N) payments
+
+payments (1) ──< (N) payment_items
+
+webhooks (1) ──< (N) webhook_notifications
+```
+
+---
+
+### Índices e Performance
+
+**Índices Criados para Otimização:**
+- Índices em foreign keys para joins rápidos
+- Índices em campos de busca frequente (email, CPF, external_reference)
+- Índices em campos de ordenação (created_at DESC)
+- Índices em campos de filtro (status, active, processed)
+- Índices compostos para queries complexas
+
+**Constraints:**
+- Foreign keys com `ON DELETE CASCADE` para manter integridade referencial
+- Unique constraints em campos que devem ser únicos (email, CPF, external_reference)
+- Check constraints para validar valores (status, valores >= 0, etc)
 
 ---
 
 ## Endpoints da API
 
-### Autenticação
+### Autenticação e Usuários
 
+#### 1. POST `/users/register/` - Registrar Novo Usuário
+
+Cria um novo usuário no sistema.
+
+**Headers:**
 ```
-POST /usuarios/register/
-POST /usuarios/login/
-POST /usuarios/logout/
+Content-Type: application/json
 ```
+
+**Request Body:**
+```json
+{
+  "name": "João Silva",
+  "email": "joao@example.com",
+  "password": "senhaSegura123",
+  "confirm_password": "senhaSegura123"
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Usuário criado com sucesso",
+  "data": {
+    "id": 1,
+    "name": "João Silva",
+    "email": "joao@example.com",
+    "registration_date": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: Email já cadastrado, senhas não coincidem, dados inválidos
+- `500 Internal Server Error`: Erro no servidor
+
+---
+
+#### 2. POST `/users/login/` - Login de Usuário
+
+Autentica um usuário e retorna tokens JWT.
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "email": "joao@example.com",
+  "password": "senhaSegura123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Login realizado com sucesso",
+  "data": {
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+    "user": {
+      "id": 1,
+      "name": "João Silva",
+      "email": "joao@example.com"
+    }
+  }
+}
+```
+
+**Erros Possíveis:**
+- `401 Unauthorized`: Credenciais inválidas
+- `400 Bad Request`: Dados faltando ou inválidos
+
+---
+
+#### 3. POST `/users/logout/` - Logout de Usuário
+
+Invalida o token de acesso atual (adiciona à blacklist).
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGc..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Logout realizado com sucesso"
+}
+```
+
+---
+
+#### 4. POST `/users/refresh-token/` - Renovar Token de Acesso
+
+Renova o token de acesso usando o refresh token.
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGc..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGc..."
+  }
+}
+```
+
+---
+
+#### 5. POST `/users/update/` - Atualizar Dados do Usuário
+
+Atualiza informações do usuário autenticado.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "João Silva Santos",
+  "email": "joao.santos@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Usuário atualizado com sucesso",
+  "data": {
+    "id": 1,
+    "name": "João Silva Santos",
+    "email": "joao.santos@example.com"
+  }
+}
+```
+
+---
+
+#### 6. POST `/users/forgot-password/` - Solicitar Reset de Senha
+
+Envia email com link para reset de senha.
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "email": "joao@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Email de recuperação enviado com sucesso"
+}
+```
+
+---
+
+#### 7. POST `/users/reset-password/` - Redefinir Senha
+
+Redefine a senha usando o token de reset.
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "token": "token_hash_aqui",
+  "new_password": "novaSenhaSegura123",
+  "confirm_password": "novaSenhaSegura123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Senha redefinida com sucesso"
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: Token inválido ou expirado, senhas não coincidem
+
+---
+
+### Clientes
+
+#### 1. POST `/clients/create/` - Criar Cliente
+
+Cria um novo cliente e sincroniza com o Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "João Silva",
+  "cpf": "12345678900",
+  "phone": "11987654321",
+  "mobile_phone": "11987654321",
+  "address": {
+    "address": "Rua Exemplo",
+    "address_number": "123",
+    "complement": "Apto 45",
+    "province": "Centro",
+    "city": "São Paulo",
+    "state": "SP",
+    "postal_code": "01234567"
+  }
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Cliente criado com sucesso",
+  "data": {
+    "id": "uuid-do-cliente",
+    "name": "João Silva",
+    "cpf": "12345678900",
+    "asaas_id": "cus_123456789",
+    "registration_date": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+#### 2. GET `/clients/detail/{client_id}/` - Detalhes do Cliente
+
+Retorna informações completas de um cliente.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-do-cliente",
+    "name": "João Silva",
+    "cpf": "12345678900",
+    "phone": "11987654321",
+    "mobile_phone": "11987654321",
+    "asaas_id": "cus_123456789",
+    "address": {
+      "address": "Rua Exemplo",
+      "address_number": "123",
+      "complement": "Apto 45",
+      "province": "Centro",
+      "city": "São Paulo",
+      "state": "SP",
+      "postal_code": "01234567"
+    },
+    "registration_date": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+#### 3. POST `/clients/update/` - Atualizar Cliente
+
+Atualiza dados do cliente e sincroniza com Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "João Silva Santos",
+  "phone": "11999999999",
+  "address": {
+    "address": "Nova Rua",
+    "address_number": "456",
+    "city": "Rio de Janeiro",
+    "state": "RJ",
+    "postal_code": "20000000"
+  }
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Cliente atualizado com sucesso",
+  "data": {
+    "id": "uuid-do-cliente",
+    "name": "João Silva Santos",
+    ...
+  }
+}
+```
+
+---
+
+#### 4. POST `/clients/sync/{client_id}/` - Sincronizar Cliente com Asaas
+
+Força sincronização dos dados do cliente com o Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Cliente sincronizado com sucesso",
+  "data": {
+    "asaas_id": "cus_123456789",
+    "synced_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+#### 5. GET `/clients/client-by-bearer-token/` - Obter Cliente pelo Token
+
+Retorna o cliente associado ao token de autenticação atual.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-do-cliente",
+    "name": "João Silva",
+    "cpf": "12345678900",
+    ...
+  }
+}
+```
+
+---
 
 ### Pedidos
 
-```
-POST   /pedidos/create/           # Criar pedido
-GET    /pedidos/detail/{id}/      # Detalhes do pedido
-POST   /pedidos/update/{id}/      # Atualizar itens do pedido
-POST   /pedidos/confirm/{id}/     # Confirmar pedido
-POST   /pedidos/cancel/{id}/      # Cancelar pedido
-GET    /pedidos/my-orders/        # Listar pedidos do cliente
-POST   /pedidos/add-shipping/{id}/ # Adicionar frete ao pedido
-```
+#### 1. POST `/orders/create/` - Criar Pedido
 
-#### Adicionar Frete ao Pedido
+Cria um novo pedido com itens.
 
+**Headers:**
 ```
-POST /pedidos/add-shipping/{order_id}/
+Authorization: Bearer {access_token}
 Content-Type: application/json
+```
 
+**Request Body:**
+```json
+{
+  "items": [
+    {
+      "product_id": "1",
+      "product_name": "Produto A",
+      "quantity": 2,
+      "unit_price": 25.00
+    },
+    {
+      "product_id": "2",
+      "product_name": "Produto B",
+      "quantity": 1,
+      "unit_price": 50.00
+    }
+  ],
+  "notes": "Observações do pedido"
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Pedido criado com sucesso",
+  "data": {
+    "id": "uuid-do-pedido",
+    "external_reference": "ORD_20240115103000_ABC123",
+    "client": {
+      "id": "uuid-do-cliente",
+      "name": "João Silva"
+    },
+    "items": [
+      {
+        "product_id": "1",
+        "product_name": "Produto A",
+        "quantity": 2,
+        "unit_price": 25.00,
+        "total_price": 50.00
+      }
+    ],
+    "subtotal": 100.00,
+    "total": 100.00,
+    "status": "PENDING",
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+#### 2. GET `/orders/detail/{order_id}/` - Detalhes do Pedido
+
+Retorna informações completas de um pedido.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-do-pedido",
+    "external_reference": "ORD_20240115103000_ABC123",
+    "client": {
+      "id": "uuid-do-cliente",
+      "name": "João Silva",
+      "cpf": "12345678900"
+    },
+    "items": [...],
+    "subtotal": 100.00,
+    "total": 146.02,
+    "shipping": {
+      "service_id": 1,
+      "service_name": "PAC",
+      "price": 46.02,
+      "delivery_time": 8
+    },
+    "status": "PENDING",
+    "notes": "Observações",
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:35:00Z"
+  }
+}
+```
+
+---
+
+#### 3. POST `/orders/update/{order_id}/` - Atualizar Pedido
+
+Atualiza itens de um pedido pendente.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "items": [
+    {
+      "product_id": "1",
+      "product_name": "Produto A",
+      "quantity": 3,
+      "unit_price": 25.00
+    }
+  ]
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Pedido atualizado com sucesso",
+  "data": {
+    "id": "uuid-do-pedido",
+    "subtotal": 75.00,
+    "total": 75.00,
+    ...
+  }
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: Pedido não pode ser atualizado (já confirmado/pago)
+- `404 Not Found`: Pedido não encontrado
+
+---
+
+#### 4. POST `/orders/confirm/{order_id}/` - Confirmar Pedido
+
+Confirma um pedido pendente.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Pedido confirmado com sucesso",
+  "data": {
+    "id": "uuid-do-pedido",
+    "status": "CONFIRMED",
+    "confirmed_at": "2024-01-15T10:40:00Z"
+  }
+}
+```
+
+---
+
+#### 5. POST `/orders/cancel/{order_id}/` - Cancelar Pedido
+
+Cancela um pedido e estorna pagamentos se necessário.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Pedido cancelado com sucesso",
+  "data": {
+    "id": "uuid-do-pedido",
+    "status": "CANCELLED",
+    "refunds": [
+      {
+        "payment_id": "uuid-do-pagamento",
+        "value": 100.00,
+        "status": "REFUNDED"
+      }
+    ]
+  }
+}
+```
+
+**Nota**: Este endpoint estorna automaticamente todos os pagamentos pagos do pedido e envia emails de notificação (assíncrono via Celery).
+
+---
+
+#### 6. GET `/orders/my-orders/` - Listar Pedidos do Cliente
+
+Retorna todos os pedidos do cliente autenticado.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Query Parameters (opcionais):**
+- `status`: Filtrar por status (PENDING, CONFIRMED, PAID, CANCELLED)
+- `page`: Número da página (padrão: 1)
+- `page_size`: Itens por página (padrão: 10)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "count": 5,
+    "results": [
+      {
+        "id": "uuid-do-pedido",
+        "external_reference": "ORD_20240115103000_ABC123",
+        "total": 100.00,
+        "status": "PENDING",
+        "created_at": "2024-01-15T10:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+#### 7. POST `/orders/add-shipping/{order_id}/` - Adicionar Frete ao Pedido
+
+Adiciona um serviço de frete a um pedido e atualiza o total.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
 {
   "service_id": 1,
   "service_name": "PAC",
   "price": 46.02,
-  "custom_price": 46.02,  // opcional
+  "custom_price": 46.02,
   "delivery_time": 8,
-  "custom_delivery_time": 8,  // opcional
+  "custom_delivery_time": 8,
   "currency": "BRL",
-  "company": {  // opcional
+  "company": {
     "id": 1,
     "name": "Correios",
-    "picture": "https://..."
+    "picture": "https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png"
   },
   "from_postal_code": "96020360",
   "to_postal_code": "01018020"
 }
+```
 
-Response:
+**Response (200 OK):**
+```json
 {
-  "order_id": "...",
-  "external_reference": "ORD_...",
-  "subtotal": 50.00,
-  "shipping": {
-    "service_id": 1,
-    "service_name": "PAC",
-    "price": 46.02,
-    "final_price": 46.02,
-    "delivery_time": 8,
-    "final_delivery_time": 8,
-    "company": {...}
-  },
-  "shipping_price": 46.02,
-  "total": 96.02,  // subtotal + frete
-  ...
+  "success": true,
+  "message": "Frete adicionado ao pedido com sucesso",
+  "data": {
+    "order_id": "uuid-do-pedido",
+    "external_reference": "ORD_20240115103000_ABC123",
+    "subtotal": 100.00,
+    "shipping": {
+      "service_id": 1,
+      "service_name": "PAC",
+      "price": 46.02,
+      "final_price": 46.02,
+      "delivery_time": 8,
+      "final_delivery_time": 8,
+      "company": {
+        "id": 1,
+        "name": "Correios"
+      }
+    },
+    "shipping_price": 46.02,
+    "total": 146.02
+  }
 }
 ```
 
+**Erros Possíveis:**
+- `400 Bad Request`: Pedido já tem frete associado ou não pode ser modificado
+- `404 Not Found`: Pedido não encontrado
+
+---
+
 ### Checkout
 
+#### 1. POST `/checkouts/create/` - Criar Checkout
+
+Cria um checkout no Asaas a partir de um pedido ou dados diretos.
+
+**Headers:**
 ```
-POST   /checkout/create/          # Criar checkout
-GET    /checkout/{id}/            # Detalhes do checkout
-POST   /checkout/{id}/cancel/     # Cancelar checkout
-POST   /checkout/{id}/sync/       # Sincronizar status com Asaas
-GET    /checkout/list/            # Listar checkouts
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body (com pedido existente):**
+```json
+{
+  "externalReference": "ORD_20240115103000_ABC123",
+  "customer": "cus_123456789",
+  "chargeTypes": ["DETACHED", "INSTALLMENT"],
+  "minutesToExpire": 60,
+  "callback": {
+    "successUrl": "https://seusite.com/sucesso",
+    "cancelUrl": "https://seusite.com/falha",
+    "expiredUrl": "https://seusite.com/expirado"
+  },
+  "paymentMethods": ["PIX", "CREDIT_CARD"],
+  "installment": {
+    "maxInstallmentCount": 5
+  }
+}
+```
+
+**Request Body (sem pedido - checkout direto):**
+```json
+{
+  "name": "Checkout de Teste",
+  "value": 100.00,
+  "description": "Descrição do checkout",
+  "customer": "cus_123456789",
+  "chargeTypes": ["DETACHED"],
+  "paymentMethods": ["PIX"],
+  "minutesToExpire": 30
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Checkout criado com sucesso",
+  "data": {
+    "id": "uuid-do-checkout",
+    "asaas_id": "checkout_123456789",
+    "checkout_url": "https://sandbox.asaas.com/checkout/checkout_123456789",
+    "value": 146.02,
+    "status": "PENDING",
+    "items": [
+      {
+        "name": "Produto A",
+        "value": 25.00,
+        "quantity": 2,
+        "externalReference": "prod_1"
+      },
+      {
+        "name": "Frete - PAC - Correios",
+        "value": 46.02,
+        "quantity": 1,
+        "externalReference": "SHIPPING_1"
+      }
+    ],
+    "expires_at": "2024-01-15T11:30:00Z"
+  }
+}
+```
+
+**Nota**: Se o checkout for criado a partir de um pedido (`externalReference`), o sistema automaticamente:
+- Busca os itens do pedido
+- Adiciona o frete como item (se existir)
+- Calcula o valor total
+
+---
+
+#### 2. GET `/checkouts/detail/{checkout_id}/` - Detalhes do Checkout
+
+Retorna informações completas de um checkout.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-do-checkout",
+    "asaas_id": "checkout_123456789",
+    "name": "Checkout de Teste",
+    "value": 146.02,
+    "description": "Descrição",
+    "status": "PENDING",
+    "checkout_url": "https://sandbox.asaas.com/checkout/checkout_123456789",
+    "client": {
+      "id": "uuid-do-cliente",
+      "name": "João Silva"
+    },
+    "installments": 1,
+    "created_at": "2024-01-15T10:30:00Z",
+    "expires_at": "2024-01-15T11:30:00Z"
+  }
+}
+```
+
+---
+
+#### 3. GET `/checkouts/list/` - Listar Checkouts
+
+Retorna lista de checkouts do cliente autenticado.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Query Parameters (opcionais):**
+- `status`: Filtrar por status (PENDING, PAID, CANCELLED, etc.)
+- `page`: Número da página
+- `page_size`: Itens por página
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "count": 10,
+    "results": [
+      {
+        "id": "uuid-do-checkout",
+        "asaas_id": "checkout_123456789",
+        "value": 146.02,
+        "status": "PENDING",
+        "created_at": "2024-01-15T10:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+#### 4. POST `/checkouts/cancel/{checkout_id}/` - Cancelar Checkout
+
+Cancela um checkout pendente no Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Checkout cancelado com sucesso",
+  "data": {
+    "id": "uuid-do-checkout",
+    "status": "CANCELLED"
+  }
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: Checkout não pode ser cancelado (já pago ou expirado)
+- `404 Not Found`: Checkout não encontrado
+
+---
+
+#### 5. POST `/checkouts/sync/{checkout_id}/` - Sincronizar Checkout
+
+Sincroniza o status do checkout com o Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Checkout sincronizado com sucesso",
+  "data": {
+    "id": "uuid-do-checkout",
+    "status": "PAID",
+    "synced_at": "2024-01-15T10:45:00Z"
+  }
+}
 ```
 
 #### Criação de Checkout com Pedido e Frete
@@ -1136,34 +2595,767 @@ Quando um checkout é criado a partir de um pedido (usando `externalReference`),
 }
 ```
 
-### Cliente
-
-```
-POST   /clientes/create/          # Criar cliente
-GET    /clientes/{id}/            # Detalhes do cliente
-POST   /clientes/sync-asaas/      # Sincronizar com Asaas
-```
-
 ### Webhooks
 
+#### 1. POST `/webhooks/receive/` - Receber Webhook do Asaas
+
+Endpoint público para receber notificações do Asaas sobre eventos de pagamento.
+
+**Headers:**
 ```
-POST   /webhook/asaas/            # Receber webhook do Asaas
+Content-Type: application/json
 ```
+
+**Request Body (exemplo PAYMENT_RECEIVED):**
+```json
+{
+  "event": "PAYMENT_RECEIVED",
+  "payment": {
+    "id": "pay_123456789",
+    "customer": "cus_123456789",
+    "value": 146.02,
+    "netValue": 144.02,
+    "status": "RECEIVED",
+    "billingType": "PIX",
+    "externalReference": "ORD_20240115103000_ABC123",
+    "dueDate": "2024-01-15",
+    "paymentDate": "2024-01-15T10:45:00Z"
+  }
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Webhook processado com sucesso"
+}
+```
+
+**Eventos Processados:**
+- `PAYMENT_CREATED`: Pagamento criado
+- `PAYMENT_CONFIRMED`: Pagamento confirmado
+- `PAYMENT_RECEIVED`: Pagamento recebido (atualiza pedido para PAID)
+- `PAYMENT_OVERDUE`: Pagamento vencido
+- `PAYMENT_DELETED`: Pagamento deletado
+- `PAYMENT_REFUNDED`: Pagamento estornado (cancela pedido e envia email)
+
+---
+
+#### 2. POST `/webhooks/create/` - Criar Webhook no Asaas
+
+Cria um novo webhook no Asaas.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "url": "https://seu-dominio.com/webhooks/receive/",
+  "email": "notificacoes@example.com",
+  "events": [
+    "PAYMENT_RECEIVED",
+    "PAYMENT_REFUNDED",
+    "PAYMENT_CONFIRMED"
+  ]
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Webhook criado com sucesso",
+  "data": {
+    "id": "uuid-do-webhook",
+    "asaas_webhook_id": "webhook_123456789",
+    "url": "https://seu-dominio.com/webhooks/receive/",
+    "status": "ACTIVE",
+    "events": ["PAYMENT_RECEIVED", "PAYMENT_REFUNDED"]
+  }
+}
+```
+
+---
+
+#### 3. GET `/webhooks/list/` - Listar Webhooks
+
+Retorna lista de webhooks cadastrados.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "count": 2,
+    "results": [
+      {
+        "id": "uuid-do-webhook",
+        "url": "https://seu-dominio.com/webhooks/receive/",
+        "status": "ACTIVE",
+        "events": ["PAYMENT_RECEIVED"]
+      }
+    ]
+  }
+}
+```
+
+---
+
+#### 4. GET `/webhooks/detail/{webhook_id}/` - Detalhes do Webhook
+
+Retorna informações completas de um webhook.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid-do-webhook",
+    "asaas_webhook_id": "webhook_123456789",
+    "url": "https://seu-dominio.com/webhooks/receive/",
+    "email": "notificacoes@example.com",
+    "status": "ACTIVE",
+    "enabled": true,
+    "events": ["PAYMENT_RECEIVED", "PAYMENT_REFUNDED"],
+    "created_at": "2024-01-15T10:00:00Z"
+  }
+}
+```
+
+---
+
+#### 5. POST `/webhooks/update/{webhook_id}/` - Atualizar Webhook
+
+Atualiza configurações de um webhook.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "enabled": false,
+  "events": ["PAYMENT_RECEIVED"]
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Webhook atualizado com sucesso",
+  "data": {
+    "id": "uuid-do-webhook",
+    "enabled": false,
+    ...
+  }
+}
+```
+
+---
+
+#### 6. POST `/webhooks/delete/{webhook_id}/` - Deletar Webhook
+
+Remove um webhook do Asaas e do banco de dados.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Webhook deletado com sucesso"
+}
+```
+
+---
 
 ### Frete (Melhor Envio)
 
+#### 1. GET `/shippings/auth/url/` ou GET `/melhor-envio/auth/url/` - Obter URL de Autorização OAuth
+
+Retorna a URL para autorização OAuth do Melhor Envio. Disponível em ambos os paths para compatibilidade.
+
+**Nota**: Todos os endpoints de frete estão disponíveis em:
+- `/shippings/*` (rota principal)
+- `/melhor-envio/*` (rota alternativa)
+
+**Headers:**
 ```
-GET    /shippings/auth/url/       # Obter URL de autorização OAuth
-GET    /melhor-envio/callback/    # Callback OAuth (automático)
-POST   /shippings/auth/           # Autenticar com código manual
-POST   /shippings/auth/refresh/   # Renovar token
-GET    /shippings/auth/status/    # Status do token (debug)
-POST   /shippings/calculate/      # Calcular frete
+Authorization: Bearer {access_token}
 ```
+
+**Nota**: Este endpoint não requer autenticação (permission_classes = [AllowAny]).
+
+**Query Parameters (opcionais):**
+- `redirect_uri`: URI de redirecionamento customizada
+- `state`: String para prevenção de CSRF
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "auth_url": "https://sandbox.melhorenvio.com.br/oauth/authorize?client_id=...&redirect_uri=...&response_type=code&scope=shipping-calculate shipping-companies",
+    "instructions": "Redirecione o usuário para esta URL para autorizar o aplicativo"
+  }
+}
+```
+
+---
+
+#### 2. GET `/melhor-envio/callback/` ou GET `/shippings/callback/` - Callback OAuth (Automático)
+
+Endpoint de callback automático após autorização OAuth. Disponível em ambos os paths para compatibilidade.
+
+**Nota**: O endpoint está disponível em:
+- `/melhor-envio/callback/` (rota alternativa)
+- `/shippings/callback/` (rota principal)
+
+**Query Parameters:**
+- `code`: Código de autorização
+- `state`: Estado (opcional)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Autenticação realizada com sucesso! Token salvo automaticamente.",
+  "data": {
+    "token": {
+      "access_token": "eyJ0e...",
+      "refresh_token": "eyJ0e...",
+      "expires_in": 2592000,
+      "token_type": "Bearer"
+    },
+    "saved": true,
+    "token_preview": "eyJ0e...nTKfE"
+  }
+}
+```
+
+---
+
+#### 3. POST `/shippings/auth/` - Autenticar com Código Manual
+
+Autentica manualmente usando código de autorização OAuth.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "authorization_code": "AUTH_CODE_FROM_OAUTH",
+  "redirect_uri": "https://seu-site.com/callback"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Autenticação realizada com sucesso",
+  "data": {
+    "access_token": "eyJ0e...",
+    "refresh_token": "eyJ0e...",
+    "expires_in": 2592000,
+    "token_type": "Bearer",
+    "saved": true
+  }
+}
+```
+
+---
+
+#### 4. POST `/shippings/auth/refresh/` - Renovar Token
+
+Renova o token de acesso usando refresh token.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Token renovado com sucesso",
+  "data": {
+    "access_token": "eyJ0e...",
+    "refresh_token": "eyJ0e...",
+    "expires_in": 2592000,
+    "token_type": "Bearer"
+  }
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: Token não pode ser renovado (sem refresh_token)
+- `401 Unauthorized`: Refresh token inválido ou expirado
+
+---
+
+#### 5. GET `/shippings/auth/status/` - Status do Token (Debug)
+
+Retorna informações sobre o token atual (debug).
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "token_in_env": true,
+    "token_in_db": true,
+    "token_valid": true,
+    "token_source": "oauth",
+    "can_refresh": true,
+    "token_db_details": {
+      "has_access_token": true,
+      "has_refresh_token": true,
+      "access_token_length": 1701,
+      "refresh_token_length": 256,
+      "expires_in": 2592000,
+      "created_at": "2024-01-15T10:00:00Z",
+      "is_expired": false,
+      "source": "oauth"
+    },
+    "environment": "sandbox",
+    "client_id_configured": true,
+    "client_secret_configured": true,
+    "redirect_uri_configured": true
+  }
+}
+```
+
+---
+
+#### 6. POST `/shippings/calculate/` - Calcular Frete
+
+Calcula opções de frete para produtos e CEP de destino.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "to_postal_code": "01018020",
+  "products": [
+    {
+      "product_id": "1",
+      "quantity": 2
+    },
+    {
+      "product_id": "2",
+      "quantity": 1
+    }
+  ],
+  "from_postal_code": "96020360",
+  "receipt": false,
+  "own_hand": false,
+  "services": "1,2,18"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "quotes": [
+      {
+        "id": 1,
+        "name": "PAC",
+        "price": "46.02",
+        "custom_price": "46.02",
+        "currency": "R$",
+        "delivery_time": 8,
+        "custom_delivery_time": 8,
+        "company": {
+          "id": 1,
+          "name": "Correios",
+          "picture": "https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png"
+        },
+        "final_price": 46.02,
+        "final_delivery_time": 8
+      },
+      {
+        "id": 2,
+        "name": "SEDEX",
+        "price": "78.50",
+        "delivery_time": 5,
+        "company": {
+          "id": 1,
+          "name": "Correios"
+        },
+        "final_price": 78.50,
+        "final_delivery_time": 5
+      }
+    ],
+    "count": 5
+  }
+}
+```
+
+**Erros Possíveis:**
+- `400 Bad Request`: CEP inválido, produtos não encontrados
+- `401 Unauthorized`: Token inválido ou expirado
+- `500 Internal Server Error`: Erro na API do Melhor Envio
+
+---
+
+### Emails
+
+#### 1. POST `/emails/contact/` - Enviar Mensagem de Contato
+
+Endpoint para envio de mensagens de contato (opcional).
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "João Silva",
+  "email": "joao@example.com",
+  "subject": "Dúvida sobre pedido",
+  "message": "Gostaria de saber o status do meu pedido..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Mensagem enviada com sucesso"
+}
+```
+
+**Nota**: Os emails automáticos (confirmação de pedido, cancelamento, estorno) são enviados automaticamente pelo sistema através de tasks Celery assíncronas e não possuem endpoints públicos.
 
 ### Emails
 
 **Nota**: Não há endpoint público para envio de emails. Os emails são enviados automaticamente pelo sistema em eventos específicos (cancelamento de pedido, estorno, etc.) através de tasks Celery assíncronas.
+
+---
+
+## Funcionalidades Detalhadas do Sistema
+
+### 1. Sistema de Autenticação e Autorização
+
+#### Autenticação JWT
+- **Tokens de Acesso**: Tokens JWT com tempo de expiração configurável
+- **Refresh Tokens**: Tokens para renovação de acesso sem novo login
+- **Blacklist de Tokens**: Tokens invalidados são armazenados em blacklist (Redis)
+- **Autenticação por Bearer Token**: Todos os endpoints protegidos requerem `Authorization: Bearer {token}`
+
+#### Recuperação de Senha
+- **Geração de Token**: Tokens únicos e com hash para segurança
+- **Expiração**: Tokens expiram em 1 hora (configurável)
+- **Uso Único**: Tokens são marcados como usados após utilização
+- **Email de Recuperação**: Envio automático de email com link de reset (via Celery)
+
+#### Segurança
+- **Hash de Senhas**: Bcrypt com salt automático
+- **Validação de Email**: Emails devem ser únicos no sistema
+- **Validação de CPF**: CPF deve ser único e válido
+
+---
+
+### 2. Gestão de Clientes
+
+#### Sincronização com Asaas
+- **Criação Automática**: Cliente é criado no Asaas automaticamente ao ser cadastrado
+- **Sincronização Bidirecional**: Dados podem ser sincronizados do Asaas para o sistema local
+- **Atualização Automática**: Alterações no cliente são refletidas no Asaas
+- **Referência Externa**: `asaas_id` mantém referência ao cliente no gateway
+
+#### Validações
+- **CPF Único**: Sistema garante que cada CPF seja único
+- **Endereço Completo**: Validação de CEP e endereço completo
+- **Telefone**: Validação de formato de telefone (opcional)
+
+---
+
+### 3. Gestão de Pedidos
+
+#### Criação de Pedidos
+- **Validação de Itens**: Sistema valida produtos e quantidades
+- **Cálculo Automático**: Subtotal e total calculados automaticamente
+- **Geração de Referência Externa**: Referência única gerada automaticamente (formato: `ORD_{timestamp}_{random}`)
+- **Status Inicial**: Pedidos são criados com status `PENDING`
+
+#### Atualização de Pedidos
+- **Restrições**: Apenas pedidos `PENDING` podem ser atualizados
+- **Recálculo Automático**: Totais são recalculados ao atualizar itens
+- **Validação de Itens**: Sistema valida que pedido não fique sem itens
+
+#### Confirmação de Pedidos
+- **Mudança de Status**: Status muda de `PENDING` para `CONFIRMED`
+- **Timestamp**: `confirmed_at` é registrado
+- **Validação**: Apenas pedidos `PENDING` podem ser confirmados
+
+#### Cancelamento de Pedidos
+- **Estorno Automático**: Todos os pagamentos pagos são estornados automaticamente
+- **Integração com Asaas**: Estornos são processados via API do Asaas
+- **Notificações**: Emails são enviados ao proprietário e cliente (assíncrono)
+- **Status Final**: Pedido é marcado como `CANCELLED`
+- **Restrições**: Apenas pedidos `PENDING` ou `CONFIRMED` podem ser cancelados
+
+#### Gestão de Frete
+- **Adição de Frete**: Frete pode ser adicionado a pedidos pendentes
+- **Atualização de Total**: Total do pedido é atualizado automaticamente (subtotal + frete)
+- **OneToOne**: Um pedido pode ter apenas um frete associado
+- **Informações Completas**: Armazena informações completas do serviço de frete
+
+---
+
+### 4. Sistema de Checkout
+
+#### Criação de Checkout
+- **Integração com Pedido**: Checkout pode ser criado a partir de um pedido existente
+- **Busca Automática de Itens**: Sistema busca itens do pedido automaticamente
+- **Inclusão de Frete**: Frete é incluído automaticamente como item do checkout
+- **Criação no Asaas**: Checkout é criado no gateway Asaas
+- **URLs de Callback**: URLs de sucesso, falha e expiração configuráveis
+
+#### Itens do Checkout
+- **Conversão Automática**: Itens do pedido são convertidos em itens do checkout
+- **Item de Frete**: Frete é adicionado como item separado com nome formatado
+- **Imagens**: Imagens mockadas são incluídas para produtos e frete
+- **External References**: Cada item mantém referência externa
+
+#### Métodos de Pagamento
+- **PIX**: Pagamento instantâneo via PIX
+- **Cartão de Crédito**: Pagamento com cartão (parcelado ou à vista)
+- **Boleto**: Pagamento via boleto bancário (em desenvolvimento)
+
+#### Parcelamento
+- **Configuração**: Número máximo de parcelas configurável
+- **Cálculo Automático**: Sistema calcula valor das parcelas automaticamente
+- **Rastreamento**: Cada parcela é rastreada individualmente
+
+#### Sincronização
+- **Sync Manual**: Endpoint para sincronizar status com Asaas
+- **Sync Automático**: Status é atualizado via webhooks
+
+---
+
+### 5. Sistema de Pagamentos
+
+#### Processamento de Pagamentos
+- **Criação Automática**: Pagamentos são criados automaticamente ao criar checkout
+- **Rastreamento**: Cada pagamento mantém referência ao pedido e cliente
+- **Status**: Status é atualizado via webhooks do Asaas
+
+#### Pagamentos Parcelados
+- **Rastreamento Individual**: Cada parcela é um pagamento separado
+- **Installment ID**: Sistema mantém referência ao ID da parcela no Asaas
+- **Número da Parcela**: Campo `installment_number` indica qual parcela (1, 2, 3...)
+- **Confirmação**: Quando todas as parcelas são pagas, pedido é marcado como `PAID`
+
+#### Estorno de Pagamentos
+- **Estorno Automático**: Estornos são processados automaticamente no cancelamento
+- **Rastreamento**: Status `REFUNDING` e `REFUNDED` são rastreados
+- **Notificações**: Email de estorno é enviado ao cliente (via webhook)
+
+---
+
+### 6. Sistema de Webhooks
+
+#### Recebimento de Webhooks
+- **Endpoint Público**: `/webhooks/receive/` recebe notificações do Asaas
+- **Validação**: Sistema valida origem e formato das notificações
+- **Armazenamento**: Todas as notificações são armazenadas para auditoria
+- **Processamento Assíncrono**: Notificações são processadas de forma assíncrona
+
+#### Eventos Processados
+- **PAYMENT_CREATED**: Registro do evento
+- **PAYMENT_CONFIRMED**: Atualização de status do pagamento
+- **PAYMENT_RECEIVED**: Marca pagamento como pago e atualiza pedido para `PAID`
+- **PAYMENT_OVERDUE**: Marca pagamento como vencido
+- **PAYMENT_DELETED**: Marca pagamento como falhado
+- **PAYMENT_REFUNDED**: Cancela pedido e envia email de estorno
+
+#### Prevenção de Duplicação
+- **Campo `processed`**: Indica se notificação já foi processada
+- **Verificação**: Sistema verifica se notificação já foi processada antes de processar novamente
+- **Idempotência**: Processamento é idempotente (pode ser executado múltiplas vezes sem efeitos colaterais)
+
+#### Gestão de Webhooks
+- **Criação**: Webhooks podem ser criados via API
+- **Atualização**: Configurações podem ser atualizadas
+- **Listagem**: Lista de webhooks cadastrados
+- **Deleção**: Webhooks podem ser removidos
+
+---
+
+### 7. Sistema de Frete (Melhor Envio)
+
+#### Autenticação OAuth 2.0
+- **Fluxo Completo**: Implementação completa do fluxo OAuth 2.0
+- **Renovação Automática**: Tokens são renovados automaticamente quando expirados
+- **Prioridade de Tokens**: Tokens do banco têm prioridade sobre tokens do `.env`
+- **Fallback**: Sistema usa token do `.env` apenas se não houver token no banco
+
+#### Cálculo de Frete
+- **Múltiplas Opções**: Sistema retorna múltiplas opções de frete
+- **Produtos Mockados**: Produtos são mockados usando repositório interno
+- **Validação de CEP**: Sistema valida CEP de origem e destino
+- **Informações Completas**: Retorna preço, prazo, transportadora e outras informações
+
+#### Gestão de Tokens
+- **Armazenamento Seguro**: Tokens são armazenados no banco de dados
+- **Expiração**: Sistema verifica expiração automaticamente
+- **Renovação**: Tokens com `refresh_token` são renovados automaticamente
+- **Status**: Endpoint de debug para verificar status do token
+
+---
+
+### 8. Sistema de Emails
+
+#### Tipos de Email
+- **Email de Confirmação**: Enviado quando pedido é pago
+- **Email de Cancelamento (Proprietário)**: Enviado ao proprietário quando pedido é cancelado
+- **Email de Cancelamento (Cliente)**: Enviado ao cliente quando pedido é cancelado
+- **Email de Estorno**: Enviado ao cliente quando pagamento é estornado
+
+#### Formato dos Emails
+- **Texto Formatado**: Emails são enviados em formato texto (plain text)
+- **Caracteres Especiais**: Utiliza caracteres especiais para formatação visual (━, ✓, ⚠️)
+- **Informações Completas**: Inclui todas as informações relevantes do pedido/pagamento
+
+#### Processamento Assíncrono
+- **Celery Tasks**: Todos os emails são enviados via tasks Celery
+- **Retry Automático**: Sistema tenta reenviar emails que falharam (até 3 tentativas)
+- **Não Bloqueante**: Envio de email não bloqueia operações principais
+- **Serialização**: Dados são serializados antes de enviar para tasks
+
+#### Configuração
+- **SMTP**: Configuração via variáveis de ambiente
+- **Email do Proprietário**: `OWNER_EMAIL` recebe notificações importantes
+- **Email Padrão**: `DEFAULT_FROM_EMAIL` usado como remetente
+
+---
+
+### 9. Transações e Consistência
+
+#### Transações Atômicas
+- **Operações Críticas**: Operações que modificam múltiplas tabelas usam transações
+- **Rollback Automático**: Em caso de erro, todas as alterações são revertidas
+- **Integridade**: Garante que dados relacionados sejam salvos juntos ou não sejam salvos
+
+#### Rollback em APIs Externas
+- **Tentativa de Cancelamento**: Se operação falhar após sucesso na API externa, sistema tenta cancelar
+- **Limpeza Assíncrona**: Se cancelamento imediato falhar, agenda limpeza assíncrona
+- **Serviço de Limpeza**: Task Celery verifica e limpa recursos órfãos
+
+#### Validações
+- **Validação de Dados**: Todos os dados de entrada são validados
+- **Validação de Negócio**: Regras de negócio são validadas antes de salvar
+- **Mensagens de Erro**: Erros são retornados com mensagens claras
+
+---
+
+### 10. Performance e Otimizações
+
+#### Cache
+- **Redis**: Utilizado para cache de sessões e dados temporários
+- **Blacklist de Tokens**: Tokens invalidados são armazenados em Redis
+- **TTL**: Dados em cache têm tempo de vida configurável
+
+#### Queries Otimizadas
+- **Índices**: Índices criados em campos frequentemente consultados
+- **Select Related**: Uso de `select_related` e `prefetch_related` para reduzir queries
+- **Lazy Loading**: Apenas dados necessários são carregados
+
+#### Processamento Assíncrono
+- **Celery**: Operações pesadas são processadas em background
+- **Tasks**: Emails e limpezas são processadas via tasks Celery
+- **Workers**: Múltiplos workers podem processar tasks em paralelo
+
+#### Serialização
+- **Serializers Específicos**: Apenas campos necessários são serializados
+- **Nested Serializers**: Relacionamentos são serializados quando necessário
+- **Otimização**: Serialização otimizada para reduzir tamanho de respostas
+
+---
+
+### 11. Tratamento de Erros
+
+#### Erros de Validação
+- **Status 400**: Erros de validação retornam status 400 com detalhes
+- **Mensagens Claras**: Mensagens de erro são claras e específicas
+- **Campos Afetados**: Erros indicam quais campos estão incorretos
+
+#### Erros de Banco de Dados
+- **Captura de Exceções**: Erros de banco são capturados e tratados
+- **Mensagens Amigáveis**: Erros técnicos são convertidos em mensagens amigáveis
+- **Logs**: Erros são logados para debugging
+
+#### Erros de APIs Externas
+- **Retry**: Sistema tenta novamente em caso de falha temporária
+- **Fallback**: Sistema tem fallback quando APIs externas falham
+- **Notificações**: Erros críticos são notificados
+
+---
+
+### 12. Segurança
+
+#### Autenticação
+- **JWT**: Tokens JWT com assinatura e expiração
+- **Blacklist**: Tokens invalidados são adicionados à blacklist
+- **Refresh Tokens**: Renovação de tokens sem expor credenciais
+
+#### Validação de Dados
+- **Sanitização**: Dados de entrada são sanitizados
+- **Validação de Tipos**: Tipos de dados são validados
+- **Validação de Formato**: Formatos são validados (email, CPF, CEP, etc)
+
+#### Proteção de Dados
+- **Hash de Senhas**: Senhas são armazenadas como hash (bcrypt)
+- **Tokens Sensíveis**: Tokens são armazenados de forma segura
+- **Variáveis de Ambiente**: Credenciais são armazenadas em variáveis de ambiente
+
+#### HTTPS
+- **Produção**: HTTPS é obrigatório em produção
+- **Proxy Reverso**: Sistema funciona atrás de proxy reverso (Nginx, etc)
 
 ---
 

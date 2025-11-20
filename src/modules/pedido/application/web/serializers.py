@@ -1,0 +1,294 @@
+from rest_framework import serializers
+from decimal import Decimal
+
+
+class OrderItemRequestSerializer(serializers.Serializer):
+    """Serializer para receber item do pedido (ID e quantidade)"""
+    
+    product_id = serializers.CharField(
+        required=True,
+        help_text="ID do produto",
+        error_messages={
+            "required": "O campo product_id é obrigatório."
+        }
+    )
+    
+    quantity = serializers.IntegerField(
+        required=True,
+        min_value=1,
+        help_text="Quantidade",
+        error_messages={
+            "required": "O campo quantity é obrigatório.",
+            "min_value": "A quantidade deve ser maior que zero."
+        }
+    )
+
+
+class OrderItemResponseSerializer(serializers.Serializer):
+    """Serializer para responder item do pedido (com todos os dados)"""
+    
+    product_id = serializers.CharField(help_text="ID do produto")
+    product_name = serializers.CharField(help_text="Nome do produto")
+    quantity = serializers.IntegerField(help_text="Quantidade")
+    unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, help_text="Preço unitário")
+    total_price = serializers.DecimalField(max_digits=10, decimal_places=2, help_text="Preço total")
+
+
+class CreateOrderSerializer(serializers.Serializer):
+    """Serializer para criação de pedido"""
+    
+    items = OrderItemRequestSerializer(many=True, required=True)
+    
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Observações do pedido"
+    )
+    
+    couponCode = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Código do cupom de desconto",
+        error_messages={
+            "invalid": "Código do cupom inválido."
+        }
+    )
+    
+    def validate_items(self, value):
+        """Valida se há pelo menos um item"""
+        if not value or len(value) == 0:
+            raise serializers.ValidationError("O pedido deve ter pelo menos um item.")
+        
+        product_ids = [item['product_id'] for item in value if 'product_id' in item]
+        if len(product_ids) != len(set(product_ids)):
+            raise serializers.ValidationError("Cada produto deve aparecer apenas uma vez no pedido.")
+        return value
+
+
+class ClientSimpleSerializer(serializers.Serializer):
+    """Serializer simplificado para cliente no pedido"""
+    
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+
+
+class PaymentSimpleSerializer(serializers.Serializer):
+    """Serializer simplificado para pagamento no pedido"""
+    
+    id = serializers.UUIDField()
+    value = serializers.DecimalField(max_digits=10, decimal_places=2)
+    payment_method = serializers.CharField()
+    status = serializers.CharField()
+    installments = serializers.IntegerField()
+    checkout_url = serializers.URLField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    paid_at = serializers.DateTimeField(allow_null=True)
+
+
+class OrderResponseSerializer(serializers.Serializer):
+    """Serializer para resposta de pedido"""
+    
+    order_id = serializers.UUIDField()
+    external_reference = serializers.CharField()
+    client = ClientSimpleSerializer()
+    items = OrderItemResponseSerializer(many=True)
+    subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total_items = serializers.IntegerField()
+    status = serializers.CharField()
+    active = serializers.BooleanField(help_text="Indica se o pedido está ativo")
+    notes = serializers.CharField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField(allow_null=True)
+    confirmed_at = serializers.DateTimeField(allow_null=True)
+
+
+class ShippingResponseSerializer(serializers.Serializer):
+    """Serializer para informações de frete no pedido"""
+    service_id = serializers.IntegerField()
+    service_name = serializers.CharField()
+    price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    custom_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    final_price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    delivery_time = serializers.IntegerField()
+    custom_delivery_time = serializers.IntegerField(allow_null=True)
+    final_delivery_time = serializers.IntegerField()
+    currency = serializers.CharField()
+    company = serializers.DictField(allow_null=True)
+    from_postal_code = serializers.CharField()
+    to_postal_code = serializers.CharField()
+
+
+class OrderDetailSerializer(serializers.Serializer):
+    """Serializer para detalhes completos do pedido"""
+    
+    order_id = serializers.UUIDField()
+    external_reference = serializers.CharField()
+    
+    client = ClientSimpleSerializer()
+    
+    items = OrderItemResponseSerializer(many=True)
+    
+    subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
+    shipping = ShippingResponseSerializer(allow_null=True, required=False)
+    shipping_price = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
+    total = serializers.DecimalField(max_digits=10, decimal_places=2)
+    
+    status = serializers.CharField()
+    active = serializers.BooleanField(help_text="Indica se o pedido está ativo")
+    notes = serializers.CharField(allow_null=True)
+    
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()
+    confirmed_at = serializers.DateTimeField(allow_null=True)
+
+
+class UpdateOrderStatusSerializer(serializers.Serializer):
+    """Serializer para atualização de status do pedido"""
+    
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Observações sobre a mudança de status"
+    )
+
+
+class UpdateOrderItemSerializer(serializers.Serializer):
+    """Serializer para atualizar/remover item do pedido"""
+    
+    action = serializers.ChoiceField(
+        choices=['add', 'update', 'remove'],
+        required=True,
+        help_text="Ação a ser executada: add (adicionar), update (atualizar quantidade), remove (remover)"
+    )
+    
+    product_id = serializers.CharField(
+        required=True,
+        help_text="ID do produto",
+        error_messages={
+            "required": "O campo product_id é obrigatório."
+        }
+    )
+    
+    quantity = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        help_text="Quantidade (obrigatória para add e update)"
+    )
+    
+    def validate(self, data):
+        """Valida se quantity é obrigatório para add e update"""
+        action = data.get('action')
+        quantity = data.get('quantity')
+        
+        if action in ['add', 'update'] and not quantity:
+            raise serializers.ValidationError(
+                {"quantity": "O campo quantity é obrigatório para ações 'add' e 'update'."}
+            )
+        
+        return data
+
+
+class UpdateOrderSerializer(serializers.Serializer):
+    """Serializer para atualização de pedido (itens e/ou cupom)"""
+    
+    items = UpdateOrderItemSerializer(
+        many=True,
+        required=False,
+        allow_empty=True,
+        help_text="Lista de ações a serem executadas nos itens do pedido (opcional)"
+    )
+    
+    couponCode = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Código do cupom de desconto a ser aplicado",
+        error_messages={
+            "invalid": "Código do cupom inválido."
+        }
+    )
+    
+    def validate(self, data):
+        """Valida que pelo menos items ou couponCode foi fornecido"""
+        items = data.get('items')
+        coupon_code = data.get('couponCode')
+        
+        if not items and not coupon_code:
+            raise serializers.ValidationError(
+                "É necessário informar pelo menos 'items' ou 'couponCode'."
+            )
+        
+        return data
+
+
+class AddShippingToOrderSerializer(serializers.Serializer):
+    """Serializer para adicionar serviço de frete ao pedido"""
+    
+    service_id = serializers.IntegerField(
+        required=True,
+        help_text="ID do serviço no Melhor Envio"
+    )
+    service_name = serializers.CharField(
+        required=True,
+        max_length=255,
+        help_text="Nome do serviço de frete"
+    )
+    price = serializers.DecimalField(
+        required=True,
+        max_digits=10,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+        help_text="Preço do frete"
+    )
+    custom_price = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        max_digits=10,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+        help_text="Preço customizado (se aplicável)"
+    )
+    delivery_time = serializers.IntegerField(
+        required=True,
+        min_value=1,
+        help_text="Prazo de entrega em dias"
+    )
+    custom_delivery_time = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Prazo customizado (se aplicável)"
+    )
+    currency = serializers.CharField(
+        required=False,
+        default='BRL',
+        max_length=3,
+        help_text="Moeda (padrão: BRL)"
+    )
+    company = serializers.DictField(
+        required=False,
+        allow_null=True,
+        help_text="Informações da transportadora (JSON)"
+    )
+    from_postal_code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=8,
+        help_text="CEP de origem (8 dígitos). Se não informado, usa OWNER_CEP do .env"
+    )
+    
+    def validate_from_postal_code(self, value):
+        """Valida CEP de origem"""
+        # Se vazio, permite (será preenchido do .env)
+        if not value:
+            return value
+        # Remove formatação
+        value = ''.join(filter(str.isdigit, value))
+        if len(value) != 8:
+            raise serializers.ValidationError("CEP de origem deve ter 8 dígitos")
+        return value
+

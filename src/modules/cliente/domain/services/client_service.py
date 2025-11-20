@@ -25,9 +25,10 @@ class ClientService:
             province=address_data.get("province")
         )
 
+        # Usa o nome do usuário autenticado
         client_entity = ClientEntity(
             id=data.get("id"),
-            name=data["name"],
+            name=user.name,  # Nome obtido do usuário autenticado
             cpf=data["cpf"],
             phone=data.get("phone"),
             mobile_phone=data["mobile_phone"],
@@ -77,6 +78,65 @@ class ClientService:
             }
         }
 
+    def get_client_by_bearer_token(self, user_id: int) -> dict:
+        """
+        Busca informações do cliente e usuário associados através do user_id
+        
+        Args:
+            user_id: ID do usuário obtido do token Bearer
+            
+        Returns:
+            Dicionário contendo informações do usuário e cliente associado
+            
+        Raises:
+            ValueError: Se o cliente não for encontrado para o usuário
+        """
+        client_obj = self.client_repository.get_by_user_id(str(user_id))
+        if not client_obj:
+            raise ValueError("Cliente não encontrado para o usuário")
+
+        address = None
+        if client_obj.address:
+            address = {
+                "address": client_obj.address.address,
+                "number": client_obj.address.number,
+                "postal_code": client_obj.address.postal_code,
+                "city": client_obj.address.city,
+                "state": client_obj.address.state,
+                "complement": client_obj.address.complement,
+                "province": client_obj.address.province,
+            }
+
+        user_registration_date = client_obj.user.registration_date
+        if user_registration_date:
+            if hasattr(user_registration_date, 'isoformat'):
+                user_registration_date = user_registration_date.isoformat()
+            else:
+                user_registration_date = str(user_registration_date)
+        
+        user = {
+            "id": client_obj.user.id,
+            "name": client_obj.user.name,
+            "email": client_obj.user.email,
+            "active": client_obj.user.active,
+            "registration_date": user_registration_date,
+        }
+
+        return {
+            "user": user,
+            "client": {
+                "id": client_obj.id,
+                "name": client_obj.name,
+                "cpf": client_obj.cpf,
+                "phone": client_obj.phone,
+                "mobile_phone": client_obj.mobile_phone,
+                "registration_date": client_obj.registration_date.isoformat() if client_obj.registration_date and hasattr(client_obj.registration_date, 'isoformat') else (str(client_obj.registration_date) if client_obj.registration_date else None),
+                "active": client_obj.active,
+                "asaas_id": client_obj.asaas_id,
+                "address": address
+            }
+        }
+
     def update_client(self, client_id: str, data: dict) -> ClientEntity:
         existing_client = self.client_repository.get_by_id(client_id)
         if not existing_client:
@@ -96,9 +156,10 @@ class ClientService:
         else:
             updated_address = existing_client.address
 
+        # Usa o nome do usuário autenticado (não permite alteração do nome)
         updated_client = ClientEntity(
             id=existing_client.id,
-            name=data.get("name", existing_client.name),
+            name=existing_client.user.name,  # Sempre usa o nome do usuário
             cpf=data.get("cpf", existing_client.cpf),
             phone=data.get("phone", existing_client.phone),
             mobile_phone=data.get("mobile_phone", existing_client.mobile_phone),

@@ -18,11 +18,26 @@ class User:
             self.set_password(password)
 
     def set_email(self, email: str):
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-            raise ValueError("Email inválido")
-        self.email = email
+        self.email = self.validate_email(email)
 
     def set_password(self, password: str):
+        self.validate_password(password)
+        self.password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+    @staticmethod
+    def verify_password(password: str, hashed: str) -> bool:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    
+    @staticmethod
+    def validate_email(email: str) -> str:
+        """Valida o formato do email"""
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            raise ValueError("Email inválido")
+        return email
+    
+    @staticmethod
+    def validate_password(password: str) -> str:
+        """Valida a senha de acordo com as regras de negócio"""
         if len(password) < 8:
             raise ValueError("Senha precisa ter pelo menos 8 caracteres")
         if not re.search(r"[A-Z]", password):
@@ -31,8 +46,4 @@ class User:
             raise ValueError("Senha precisa ter pelo menos um número")
         if not re.search(r"\W", password):
             raise ValueError("Senha precisa ter pelo menos um caractere especial")
-        self.password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-    @staticmethod
-    def verify_password(password: str, hashed: str) -> bool:
-        return bcrypt.checkpw(password.encode(), hashed.encode())
+        return password

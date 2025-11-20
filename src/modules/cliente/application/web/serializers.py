@@ -91,14 +91,7 @@ class CreateAddressSerializer(serializers.Serializer):
 class CreateClientSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
     
-    name = serializers.CharField(
-        required=True, 
-        allow_blank=False, 
-        error_messages= {
-            "required": "O campo nome é obrigatório.",
-            "blank": "O campo nome é obrigatório."
-        }
-    )
+    # Campo name removido - será obtido do usuário autenticado
     
     cpf = serializers.CharField(
         required=True, 
@@ -124,12 +117,6 @@ class CreateClientSerializer(serializers.Serializer):
     
     asaas_id = serializers.CharField(required=False, allow_blank=True)
 
-    def validate_name(self, value):
-        try:
-            return ClientValidators.validate_name(value)
-        except ValueError as e:
-            raise serializers.ValidationError(str(e))
-
     def validate_cpf_cnpj(self, value):
         try:
             return ClientValidators.validate_cpf(value)
@@ -151,6 +138,7 @@ class CreateClientSerializer(serializers.Serializer):
     def create(self, validated_data):
         address_data = validated_data.pop("address", {})
         address_entity = CreateAddressSerializer().create(address_data)
+        # O nome será obtido do usuário autenticado no serviço
         return ClientEntity(address=address_entity, **validated_data, user=self.context["request"].user)
 
 class UpdateAddressSerializer(serializers.Serializer):
@@ -163,18 +151,12 @@ class UpdateAddressSerializer(serializers.Serializer):
     province = serializers.CharField(required=False)
 
 class UpdateClientSerializer(serializers.Serializer):
-    name = serializers.CharField(required=False)
+    # Campo name removido - será obtido do usuário autenticado
     cpf = serializers.CharField(required=False)
     phone = serializers.CharField(required=False, allow_blank=True)
     mobile_phone = serializers.CharField(required=False)
     address = UpdateAddressSerializer(required=False)
     asaas_id = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_name(self, value):
-        try:
-            return ClientValidators.validate_name(value)
-        except ValueError as e:
-            raise serializers.ValidationError(str(e))
 
     def validate_cpf(self, value):
         try:

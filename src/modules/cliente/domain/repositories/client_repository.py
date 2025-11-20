@@ -12,5 +12,13 @@ class IClientRepository:
         pass
     
     @abstractmethod
+    def get_by_asaas_id(self, asaas_id: str) -> ClientEntity | None:
+        pass
+    
+    @abstractmethod
+    def get_by_user_id(self, user_id: str) -> ClientEntity | None:
+        pass
+    
+    @abstractmethod
     def update(self, client_entity) -> ClientEntity:
         pass

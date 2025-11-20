@@ -1,6 +1,7 @@
 # Django
 Django>=4.2,<5.0
 djangorestframework>=3.15,<4.0
+django-cors-headers>=4.0
 
 # Autenticação
 bcrypt>=4.0
@@ -20,4 +21,11 @@ ipython>=8.0           # shell interativo opcional
 django-debug-toolbar>=4.0  # depuração no dev
 python-dotenv>=1.0      # ler .env local
 
+# Utilitários
+python-dateutil>=2.8.0  # parsing de datas
+pytz>=2024.1  # fusos horários
+
 requests
+
+# Celery para tarefas assíncronas
+celery>=5.3.0

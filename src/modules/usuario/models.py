@@ -1,3 +1,3 @@
-from .adapters.persistence.models import User  # importe só os que quer expor
+from .adapters.persistence.models import User, PasswordResetToken  # importe só os que quer expor
 
-__all__ = ["User"]
+__all__ = ["User", "PasswordResetToken"]

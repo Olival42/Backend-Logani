@@ -1,32 +1,52 @@
-# API de Gateway de Pagamento e Cálculo de Frete
+# API de Pagamento e Frete
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Django](https://img.shields.io/badge/Django-5.0-green.svg)](https://www.djangoproject.com/)
+[![Celery](https://img.shields.io/badge/Celery-5.3+-green.svg)](https://celeryproject.org/)
 
 ## Descrição
 
-Este projeto é uma API RESTful para servir como gateway de pagamento e realizar cálculos de frete. Construído com Python e Django, o projeto é totalmente containerizado com Docker, facilitando a configuração e o deploy em qualquer ambiente.
+API RESTful completa para gerenciamento de pedidos, pagamentos e frete, integrada com o gateway **Asaas**. Sistema robusto para e-commerce com processamento de pagamentos via PIX e cartão de crédito (parcelado ou à vista).
 
-## Funcionalidades
+Construído com Python e Django seguindo princípios de **Clean Architecture** e **Domain-Driven Design (DDD)**, com processamento assíncrono de tarefas usando **Celery** e total containerização com **Docker**.
 
-- **Processamento de Pagamentos:** Integração com serviços de pagamento para processar transações.
-- **Cálculo de Frete:** Cálculo de custos de envio baseado em diferentes critérios.
-- **Gerenciamento de Pedidos:** Funcionalidades para criar, visualizar e gerenciar pedidos.
-- **Autenticação e Autorização:** Endpoints seguros com autenticação baseada em token.
-- **Cache de Alto Desempenho:** Uso de Redis para cachear consultas frequentes e melhorar a performance.
+## ✨ Funcionalidades
 
-## Tecnologias Utilizadas
+- 🔐 **Autenticação JWT:** Sistema seguro de autenticação com tokens temporários
+- 👥 **Gestão de Clientes:** CRUD completo + sincronização automática com Asaas
+- 📦 **Gestão de Pedidos:** Criação, consulta, cancelamento e rastreamento de status
+- 💳 **Checkout Completo:** Geração de links de pagamento PIX e Cartão de Crédito
+- 🚚 **Checkout com Frete Automático:** Inclusão automática do item de frete no checkout quando o pedido possui frete
+- 💰 **Pagamentos Parcelados:** Suporte a até 12 parcelas com gestão automática
+- 🔔 **Webhooks Inteligentes:** Processamento automático de notificações de pagamento
+- ↩️ **Estorno Automático:** Cancelamento de pedidos com estorno automático
+- 📧 **Emails Assíncronos:** Notificações por email (Celery) - performance otimizada
+- 🚚 **Cálculo de Frete:** Integração com Melhor Envio para cálculo de frete por produtos
+- 🔑 **OAuth 2.0 Melhor Envio:** Autenticação OAuth com renovação automática de tokens (prioridade sobre token manual)
+- 🏗️ **Arquitetura Limpa:** Clean Architecture + DDD + Repository Pattern
 
-- **Backend:** Python, Django, Django REST Framework
-- **Banco de Dados:** PostgreSQL
-- **Cache:** Redis
-- **Containerização:** Docker, Docker Compose
+## 🛠️ Tecnologias
 
-## Configuração do Projeto
+| Categoria | Tecnologia |
+|-----------|-----------|
+| **Backend** | Python 3.11+, Django 5.0, Django REST Framework |
+| **Banco de Dados** | PostgreSQL 17 |
+| **Cache/Messaging** | Redis 7 |
+| **Processamento Assíncrono** | Celery 5.3 |
+| **Gateway de Pagamento** | [Asaas API](https://docs.asaas.com/) |
+| **Cálculo de Frete** | [Melhor Envio API](https://docs.melhorenvio.com.br/) |
+| **Autenticação** | JWT (PyJWT) |
+| **Containerização** | Docker, Docker Compose |
+| **Arquitetura** | Clean Architecture + DDD |
+
+## 🚀 Início Rápido
 
 ### Pré-requisitos
 
 - [Docker](https://www.docker.com/get-started)
 - [Docker Compose](https://docs.docker.com/compose/install/)
+- Conta no [Asaas](https://www.asaas.com) (sandbox para testes)
 
 ### Instalação
 
@@ -69,25 +89,482 @@ Este projeto é uma API RESTful para servir como gateway de pagamento e realizar
 
     A aplicação estará disponível em `http://localhost:8000` (ou na porta que você configurou em `.env`).
 
-## Configuração
+## 📚 Documentação
 
-As seguintes variáveis de ambiente podem ser configuradas no arquivo `.env`:
+- **[Documentação Técnica - Fluxo da API](./DOCUMENTACAO_TECNICA_FLUXO_API.md)** - Arquitetura, fluxos e integração completa (inclui Melhor Envio)
+- **[Fluxo Completo da API](./FLUXO_API_COMPLETO.md)** - Documentação técnica detalhada
 
-| Variável          | Descrição                                               | Valor Padrão (dev)          |
-| ----------------- | ------------------------------------------------------- | --------------------------- |
-| `ENV`             | Ambiente de execução (`dev` ou `prod`)                  | `dev`                       |
-| `SECRET_KEY`      | Chave secreta do Django                                 | (gerar uma nova)            |
-| `DEBUG`           | Ativa/desativa o modo de debug do Django                | `True`                      |
-| `ALLOWED_HOSTS`   | Hosts permitidos para a aplicação                       | `localhost,127.0.0.1`       |
-| `PORT`            | Porta em que a aplicação web será exposta               | `8000`                      |
-| `POSTGRES_DB`     | Nome do banco de dados PostgreSQL                       | `api_db`                    |
-| `POSTGRES_USER`   | Usuário do banco de dados                               | `user`                      |
-| `POSTGRES_PASSWORD` | Senha do banco de dados                                 | `password`                  |
-| `POSTGRES_HOST`   | Host do banco de dados (nome do serviço no Docker)      | `db`                        |
-| `POSTGRES_PORT`   | Porta do banco de dados                                 | `5432`                      |
-| `REDIS_HOST`      | Host do Redis (nome do serviço no Docker)               | `redis`                     |
-| `REDIS_PORT`      | Porta do Redis                                          | `6379`                      |
+### Integração com Melhor Envio
 
-## Licença
+A API integra com o Melhor Envio para cálculo de frete. A autenticação utiliza OAuth 2.0 com renovação automática de tokens:
+
+1. **Primeiro acesso**: Gere URL de autorização via `GET /shippings/auth/url/`
+2. **Autorização**: Redirecione o usuário para a URL gerada
+3. **Callback automático**: O sistema recebe o código e salva o token automaticamente
+4. **Uso**: O token é usado automaticamente para cálculos de frete
+
+**Prioridade de Tokens:**
+- **1º**: Token OAuth do banco de dados (prioridade máxima)
+- **2º**: Token do `.env` (`ACESS_TOKEN_MELHOR_ENVIO`) - usado apenas como fallback quando não há token no banco
+
+**Produtos mockados**: O frontend envia apenas IDs e quantidades. Os produtos são buscados automaticamente do repositório mockado.
+
+**Checkout com Frete**: Quando um checkout é criado a partir de um pedido que possui frete, o sistema inclui automaticamente o item de frete como último item do checkout, com nome do serviço e transportadora.
+
+Veja mais detalhes na [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md#integração-com-melhor-envio).
+
+## 🏗️ Arquitetura
+
+### Módulos
+
+```
+src/modules/
+├── usuario/       # Autenticação e usuários
+├── cliente/       # Perfil de clientes + Asaas
+├── pedido/       # Gestão de pedidos
+├── checkout/      # Links de pagamento (Asaas)
+├── pagamento/     # Gestão de pagamentos
+├── webhook/       # Processamento de notificações
+├── frete/         # Cálculo de frete (Melhor Envio)
+└── email/         # Envio de emails automáticos
+```
+
+### Fluxo de Dados
+
+```
+Frontend → API → PostgreSQL
+              ↓
+            Asaas ← Webhook → Celery (Emails Assíncronos)
+              ↓
+         Melhor Envio (Cálculo de Frete)
+              ↓
+         Redis Cache/MQ
+```
+
+### Comandos Docker
+
+```bash
+# Iniciar todos os serviços
+docker-compose up -d
+
+# Ver logs
+docker-compose logs -f
+
+# Ver logs do Celery
+docker-compose logs -f celery
+
+# Reiniciar um serviço
+docker-compose restart celery
+
+# Parar tudo
+docker-compose down
+```
+
+## ⚙️ Configuração
+
+### Variáveis de Ambiente
+
+Crie um arquivo `.env` baseado em `.env.example`:
+
+```bash
+# Aplicação
+ENV=dev
+DEBUG=True
+SECRET_KEY=sua-chave-secreta
+PORT=8000
+
+# PostgreSQL
+POSTGRES_DB=api_pagamento
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# Asaas (obrigatório)
+ASAAS_API_KEY=sua-api-key-asaas
+ASAAS_BASE_URL=https://sandbox.asaas.com/api/v3
+
+# Melhor Envio (obrigatório para cálculo de frete)
+MELHOR_ENVIO_CLIENT_ID=seu_client_id_aqui
+MELHOR_ENVIO_CLIENT_SECRET=seu_client_secret_aqui
+MELHOR_ENVIO_REDIRECT_URI=https://seu-dominio.com/melhor-envio/callback/
+MELHOR_ENVIO_ENVIRONMENT=sandbox  # ou production
+ACESS_TOKEN_MELHOR_ENVIO=seu_token_manual_aqui  # opcional (fallback quando não há token no banco)
+OWNER_CEP=96020360  # CEP de origem para cálculos (obrigatório)
+
+# Email (obrigatório para notificações de pedidos)
+OWNER_EMAIL=seu-email@exemplo.com
+DEFAULT_FROM_EMAIL=noreply@api-pagamento.com
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=
+EMAIL_HOST_PASSWORD=
+
+# Celery (já configurado automaticamente)
+CELERY_BROKER_URL=redis://redis:6379/1
+CELERY_RESULT_BACKEND=redis://redis:6379/2
+
+# Ngrok (para desenvolvimento - webhook de notificações)
+NGROK_AUTHTOKEN=seu-token-ngrok
+
+# Configurações
+DAYS_TO_CANCEL=2  # Prazo em dias para cancelar pedidos confirmados
+```
+
+**Importante:** 
+- Obtenha sua `ASAAS_API_TOKEN` em [https://www.asaas.com](https://www.asaas.com)
+- Obtenha credenciais do Melhor Envio em [https://melhorenvio.com.br](https://melhorenvio.com.br)
+- Configure o `OWNER_EMAIL` para receber notificações automáticas
+- Configure o `OWNER_CEP` para cálculos de frete
+- Emails são processados de forma assíncrona via Celery (melhor performance)
+- O sistema inclui 3 serviços no Docker: `web`, `celery` (emails) e `celery-beat` (agendamento)
+
+## 📦 Endpoints da API
+
+### Autenticação
+- `POST /usuarios/register/` - Registrar usuário
+- `POST /usuarios/login/` - Login
+- `POST /usuarios/logout/` - Logout
+
+### Clientes
+- `POST /clientes/create/` - Criar cliente
+- `GET /clientes/{id}/` - Detalhes do cliente
+- `POST /clientes/sync-asaas/` - Sincronizar com Asaas
+
+### Pedidos
+- `POST /pedidos/create/` - Criar pedido
+- `GET /pedidos/detail/{id}/` - Detalhes do pedido
+- `POST /pedidos/update/{id}/` - Atualizar itens do pedido
+- `POST /pedidos/confirm/{id}/` - Confirmar pedido
+- `POST /pedidos/cancel/{id}/` - Cancelar pedido
+- `GET /pedidos/my-orders/` - Listar pedidos do cliente
+- `POST /pedidos/add-shipping/{id}/` - Adicionar frete ao pedido
+
+### Checkout
+- `POST /checkout/create/` - Criar checkout de pagamento (inclui item de frete automaticamente se o pedido tiver frete)
+- `GET /checkout/{id}/` - Detalhes do checkout
+- `POST /checkout/{id}/cancel/` - Cancelar checkout
+- `POST /checkout/{id}/sync/` - Sincronizar status com Asaas
+- `GET /checkout/list/` - Listar checkouts
+
+### Webhooks
+- `POST /webhook/asaas/` - Receber notificações do Asaas
+
+### Frete (Melhor Envio)
+- `GET /shippings/auth/url/` - Obter URL de autorização OAuth
+- `GET /melhor-envio/callback/` - Callback OAuth (automático)
+- `POST /shippings/auth/` - Autenticar com código manual
+- `POST /shippings/auth/refresh/` - Renovar token OAuth
+- `GET /shippings/auth/status/` - Status do token (debug)
+- `POST /shippings/calculate/` - Calcular frete por produtos
+
+**📖 Consulte a [Documentação Técnica](./DOCUMENTACAO_TECNICA_FLUXO_API.md) para detalhes completos de cada endpoint.**
+
+## 🔐 Autenticação
+
+Todas as requisições (exceto login/registro) requerem header:
+
+```
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
+```
+
+**Importante:**
+- Token expira após uso
+- Faça logout para invalidar token
+- Veja [Documentação para Frontend](./DOCUMENTACAO_TECNICA_FRONTEND.md) para exemplos completos
+
+## 📊 Status dos Pedidos
+
+| Status | Descrição |
+|--------|-----------|
+| `PENDING` | Aguardando pagamento |
+| `CONFIRMED` | Confirmado (pagamento confirmado, aguardando liquidação) |
+| `PAID` | Pago e recebido (dinheiro na conta bancária) |
+| `PREPARING` | Em preparação (marcado manualmente) |
+| `CANCELLED` | Cancelado |
+
+**Detalhes:**
+- **Pagamento à vista:** `PENDING` → `CONFIRMED` → `PAID`
+- **Pagamento parcelado:** `PENDING` → `CONFIRMED` (após 1ª parcela) → `PAID` (após última parcela)
+
+## 📧 Sistema de Emails Assíncronos
+
+O sistema utiliza **Celery** para processamento assíncrono de emails, garantindo **performance máxima** (<1s de resposta) nas APIs.
+
+### Tipos de Emails Enviados
+
+1. **Pedido Confirmado** → Email ao proprietário com detalhes completos
+2. **Pedido Cancelado** → Email ao proprietário e ao cliente
+3. **Estorno Processado** → Email ao cliente com informações de crédito
+
+### Performance
+
+| Operação | Tempo Síncrono | Tempo Assíncrono |
+|----------|---------------|------------------|
+| Cancelar Pedido | ~10 segundos | <1 segundo |
+| Confirmar Pedido | ~10 segundos | <1 segundo |
+
+### Como Funciona
+
+```
+API → Serializa dados → Enfileira no Redis → Retorna resposta
+                                           ↓
+                                      Celery Worker
+                                           ↓
+                                      Envia Email
+```
+
+### Logs e Monitoramento
+
+```bash
+# Ver logs do Celery em tempo real
+docker-compose logs -f celery
+
+# Ver status dos workers
+docker exec celery-worker celery -A api_pagamento_frete inspect active
+```
+
+## 🧪 Testando a API
+
+### 1. Criar Usuário
+```bash
+curl -X POST http://localhost:8000/api/usuarios/register/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "João Silva",
+    "email": "joao@example.com",
+    "password": "senha123"
+  }'
+```
+
+### 2. Login
+```bash
+curl -X POST http://localhost:8000/api/usuarios/login/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "joao@example.com",
+    "password": "senha123"
+  }'
+```
+
+### 3. Criar Cliente
+```bash
+curl -X POST http://localhost:8000/api/clientes/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "name": "João Silva",
+    "cpf": "12345678900",
+    "phone": "11987654321",
+    "mobile_phone": "11987654321",
+    "email": "joao@example.com",
+    "address": {
+      "address": "Rua Exemplo, 123",
+      "number": "123",
+      "city": "São Paulo",
+      "state": "SP",
+      "postal_code": "01234567"
+    }
+  }'
+```
+
+### 4. Criar Pedido
+```bash
+curl -X POST http://localhost:8000/api/pedidos/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "client_id": "uuid-do-cliente",
+    "items": [
+      {
+        "product_id": "prod_123",
+        "product_name": "Produto A",
+        "quantity": 2,
+        "unit_price": 50.00
+      }
+    ]
+  }'
+```
+
+### 5. Calcular Frete
+```bash
+curl -X POST http://localhost:8000/api/shippings/calculate/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "to_postal_code": "01018020",
+    "products": [
+      {
+        "product_id": "1",
+        "quantity": 2
+      },
+      {
+        "product_id": "2",
+        "quantity": 1
+      }
+    ]
+  }'
+```
+
+### 6. Adicionar Frete ao Pedido
+```bash
+curl -X POST http://localhost:8000/api/pedidos/add-shipping/{order_id}/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "service_id": 1,
+    "service_name": "PAC",
+    "price": 46.02,
+    "delivery_time": 8,
+    "company": {
+      "id": 1,
+      "name": "Correios"
+    },
+    "from_postal_code": "96020360",
+    "to_postal_code": "01018020"
+  }'
+```
+
+### 7. Criar Checkout (com frete automático)
+```bash
+# Quando criar checkout usando externalReference, o frete é incluído automaticamente
+curl -X POST http://localhost:8000/api/checkout/create/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN" \
+  -d '{
+    "externalReference": "ORD_20251101203654_0A38230E",
+    "customer": "cus_123456789",
+    "chargeTypes": ["DETACHED", "INSTALLMENT"],
+    "minutesToExpire": 60,
+    "paymentMethods": ["PIX", "CREDIT_CARD"]
+  }'
+```
+
+### 8. Obter URL de Autorização OAuth (Melhor Envio)
+```bash
+curl -X GET http://localhost:8000/api/shippings/auth/url/ \
+  -H "Authorization: Bearer SEU_TOKEN"
+```
+
+**📖 Veja mais exemplos na [Documentação Técnica para Frontend](./DOCUMENTACAO_TECNICA_FRONTEND.md)**
+
+## 🐛 Troubleshooting
+
+### Erro: "Token não informado"
+- Certifique-se de incluir o header `Authorization: Bearer <token>`
+- Faça login novamente para obter um novo token
+
+### Erro: "Celery worker não inicia"
+```bash
+# Ver logs
+docker-compose logs celery
+
+# Verificar se Redis está rodando
+docker-compose ps redis
+
+# Reiniciar serviço
+docker-compose restart celery
+```
+
+### Emails não são enviados
+```bash
+# Ver logs do Celery
+docker-compose logs -f celery | grep email
+
+# Verificar se worker está processando tasks
+docker exec celery-worker celery -A api_pagamento_frete inspect registered
+```
+
+### Banco de dados não inicia
+```bash
+docker-compose down -v
+docker-compose up -d
+```
+
+### Webhook não recebe notificações
+- Certifique-se de que o Ngrok está configurado
+- Verifique a URL do webhook no painel do Asaas
+- Veja logs: `docker-compose logs -f web | grep webhook`
+
+### Performance lenta
+- Verifique se o Celery está rodando: `docker-compose ps celery`
+- Verifique logs de tempo de resposta
+- Considere escalar workers do Celery se necessário
+
+### Erro: "Token inválido ou expirado" no cálculo de frete
+- **Prioridade**: O sistema primeiro busca token OAuth do banco de dados, depois do `.env` (fallback)
+- Autentique via OAuth para obter token no banco: `GET /shippings/auth/url/` → autorize → callback
+- Ou configure token manual no `.env` (`ACESS_TOKEN_MELHOR_ENVIO`) como fallback
+- Verifique status do token: `GET /shippings/auth/status/`
+
+### Erro: "invalid_client" ao autenticar com Melhor Envio
+- Verifique se `MELHOR_ENVIO_CLIENT_ID` e `MELHOR_ENVIO_CLIENT_SECRET` estão corretos no `.env`
+- Certifique-se de que não há espaços extras nas credenciais
+- Verifique se o `redirect_uri` está exatamente igual ao configurado no painel do Melhor Envio
+
+## 🚀 Deploy e Produção
+
+### Checklist de Produção
+
+- [ ] Alterar `ENV=prod` no `.env`
+- [ ] Alterar `DEBUG=False` no `.env`
+- [ ] Configurar variáveis de ambiente de produção
+- [ ] Configurar credenciais SMTP reais
+- [ ] Configurar backup do banco de dados
+- [ ] Configurar monitoramento (Sentry, Logs)
+- [ ] Escalar workers do Celery conforme demanda
+- [ ] Configurar HTTPS (Nginx/Caddy como proxy reverso)
+
+### Escalando Workers do Celery
+
+Edite `docker-compose.yml` e aumente o número de replicas:
+
+```yaml
+celery:
+  deploy:
+    replicas: 3  # 3 workers processando emails
+```
+
+## 📊 Monitoramento
+
+### Celery Flower (Visualização)
+
+```bash
+# Adicionar ao docker-compose.yml
+celery-flower:
+  build: .
+  command: celery -A api_pagamento_frete flower
+  ports:
+    - "5555:5555"
+```
+
+Acesse: `http://localhost:5555`
+
+### Logs
+
+```bash
+# Todos os serviços
+docker-compose logs -f
+
+# Apenas API
+docker-compose logs -f web
+
+# Apenas Celery
+docker-compose logs -f celery
+```
+
+## 📄 Licença
 
 Este projeto está licenciado sob a [Licença MIT](LICENSE).
+
+---
+
+⭐ **Star este projeto se ele te ajudou!** ⭐
+
+Contribuições são bem-vindas! Abra uma issue ou faça um pull request.

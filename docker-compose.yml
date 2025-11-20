@@ -1,4 +1,4 @@
-version: '3.9'
+version: "3.9"
 
 services:
   web:
@@ -20,6 +20,42 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_started
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.${ENV}
+    container_name: celery-worker
+    working_dir: /code/src
+    command: celery -A api_pagamento_frete worker --loglevel=info
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.${ENV}
+    container_name: celery-beat
+    working_dir: /code/src
+    command: celery -A api_pagamento_frete beat --loglevel=info
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      celery:
         condition: service_started
 
   db:
@@ -47,6 +83,17 @@ services:
       - "${REDIS_PORT}:${REDIS_PORT}"
     volumes:
       - redis_data:/data
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    depends_on:
+      - web
+    environment:
+      NGROK_AUTHTOKEN: "${NGROK_AUTHTOKEN}"
+    command: http web:${PORT} --log=stdout
+    ports:
+      - "4040:4040" # Painel do Ngrok
 
 volumes:
   postgres_data:

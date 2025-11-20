@@ -1,0 +1,1 @@
+# Módulo de aplicação do checkout

@@ -26,4 +26,10 @@ urlpatterns = [
     path("", home),  # rota inicial
     path('users/', include('modules.usuario.application.web.urls')),
     path('clients/', include('modules.cliente.application.web.urls')),
+    path('checkouts/', include('modules.checkout.application.web.urls')),
+    path('orders/', include('modules.pedido.application.web.urls')),
+    path('webhooks/', include('modules.webhook.application.web.urls')),
+    path('shippings/', include('modules.frete.urls')),
+    path('melhor-envio/', include('modules.frete.urls')),  # Rota alternativa para compatibilidade
+    path('emails/', include('modules.email.urls')),
 ]
